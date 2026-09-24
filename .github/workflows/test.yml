@@ -1,0 +1,21 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m py_compile audio_grabber.pyw audio_studio.pyw audio_processing.py recording.py setup_tools.py
+      - run: python -m unittest -v
+      - name: Build recorder helper with the built-in C# compiler
+        shell: pwsh
+        run: |
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe /out:AudioRecorderHelper.exe (Get-ChildItem recorder-helper\*.cs).FullName
+          if ($LASTEXITCODE -ne 0) { exit 1 }
