@@ -1,0 +1,3 @@
+# Windows batch files must use CRLF line endings, otherwise start.bat fails when double-clicked
+*.bat text eol=crlf
+*.cmd text eol=crlf
