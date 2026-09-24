@@ -1,6 +1,9 @@
 .venv/
 .pip-cache/
 .tmp/
+.tools/
+.verification/
+.git-exec/
 __pycache__/
 *.py[cod]
 cookies*.txt
