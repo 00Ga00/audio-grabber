@@ -1,0 +1,16 @@
+.venv/
+.pip-cache/
+.tmp/
+__pycache__/
+*.py[cod]
+cookies*.txt
+*.mp3
+*.m4a
+*.flac
+*.wav
+*.opus
+*.webm
+*.part
+dist/
+build/
+*.spec
