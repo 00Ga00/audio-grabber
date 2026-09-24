@@ -13,17 +13,32 @@ import subprocess
 import tempfile
 import threading
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 APP_TITLE = "音频提取器"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 FORMATS = ["mp3", "m4a", "flac", "wav", "opus", "原始格式（不转码）"]
 QUALITY_OPTIONS = ["高品质", "标准", "节省空间"]
 LOGIN_NONE = "不登录"
 LOGIN_FILE = "cookies.txt 文件"
 LOGIN_OPTIONS = [LOGIN_NONE, "Firefox", "Edge", "Chrome", LOGIN_FILE]
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+TRACKING_QUERY_KEYS = {
+    "vd_source",
+    "spm_id_from",
+    "share_source",
+    "share_medium",
+    "share_plat",
+    "share_session_id",
+    "share_tag",
+    "unique_k",
+    "utm_campaign",
+    "utm_content",
+    "utm_medium",
+    "utm_source",
+    "utm_term",
+}
 
 CODEC_ARGS = {
     "mp3": {
@@ -98,10 +113,15 @@ def parse_time(text: str) -> float | None:
 
 def validate_url(value: str) -> str:
     value = value.strip()
-    parsed = urlparse(value)
+    parsed = urlsplit(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("请输入完整的视频网址（以 http:// 或 https:// 开头）。")
-    return value
+    clean_query = urlencode(
+        [(key, item) for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+         if key.lower() not in TRACKING_QUERY_KEYS],
+        doseq=True,
+    )
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, clean_query, parsed.fragment))
 
 
 def clock(seconds: float) -> str:
@@ -247,7 +267,7 @@ def run_job(opts: dict, log, progress, cancel_event: threading.Event) -> str:
         command += ["-i", source]
         if end is not None:
             command += ["-t", f"{end - (start or 0):.3f}"]
-        command += ["-vn", "-map", "0:a:0", "-metadata", f"title={title}"]
+        command += ["-vn", "-map", "0:a:0", "-map_metadata", "-1", "-metadata", f"title={title}"]
         if artist:
             command += ["-metadata", f"artist={artist}"]
         command += codec_args + [output]
@@ -276,6 +296,8 @@ def run_job(opts: dict, log, progress, cancel_event: threading.Event) -> str:
         _stdout, stderr = process.communicate()
         if process.returncode != 0:
             raise RuntimeError("ffmpeg 转换失败：\n" + stderr.strip()[-1200:])
+        if not os.path.isfile(output) or os.path.getsize(output) == 0:
+            raise RuntimeError("音频处理结束，但输出文件为空。")
         progress(100)
         return output
     finally:

@@ -29,6 +29,13 @@ class UtilityTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 audio_grabber.validate_url(value)
 
+    def test_validate_url_removes_tracking_but_keeps_video_options(self):
+        url = "https://www.bilibili.com/video/BV123?p=3&vd_source=secret&utm_source=test&t=12"
+        self.assertEqual(
+            audio_grabber.validate_url(url),
+            "https://www.bilibili.com/video/BV123?p=3&t=12",
+        )
+
     def test_safe_filename(self):
         self.assertEqual(audio_grabber.safe_filename('a<b>:c/"d"'), "a_b__c__d_")
         self.assertEqual(audio_grabber.safe_filename("..."), "audio")
