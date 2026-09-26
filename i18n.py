@@ -294,6 +294,11 @@ AI 组件|AI components|KI-Komponenten
 第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
 录音组件|Recorder|Rekorder
 ● 有新版本|● Update available|● Update verfügbar
+电脑配置|Computer|Computer
+正在检查……|Checking…|Wird geprüft…
+重新检测|Re-check|Neu prüfen
+解除限制|Unlock|Entsperren
+解除后所有选项都能选，但在这台电脑上可能要很久，或者显存不够而失败。确定吗？|All options become available, but on this computer they may take very long or fail for lack of GPU memory. Continue?|Alle Optionen werden freigegeben, können auf diesem Computer aber sehr lange dauern oder mangels Grafikspeicher scheitern. Fortfahren?
 链接或文件|Link or file|Link oder Datei
 下载与安装进度|Downloads & installs|Downloads & Installation
 只能拖入视频或音频文件。|Only video or audio files can be dropped.|Nur Video- oder Audiodateien können abgelegt werden.
@@ -369,6 +374,33 @@ AI 处理完成|AI finished|KI fertig
 识别到调性：|Key detected: |Erkannte Tonart: 
 （活动）| (activity)| (Aktivität)
 版本 |Version |Version
+高配（显卡加速，全部可用）|High-end (GPU, everything available)|Stark (GPU, alles verfügbar)
+中配（显卡加速，显存较小）|Mid-range (GPU with little memory)|Mittel (GPU mit wenig Speicher)
+低配（没有可用的 NVIDIA 显卡，用 CPU）|Low-end (no usable NVIDIA GPU, CPU only)|Schwach (keine nutzbare NVIDIA-GPU, nur CPU)
+按你的电脑配置，预计需要|Estimated time on this computer: |Geschätzte Dauer auf diesem Computer: 
+想快一点：少勾几项处理，或扒谱选“快速（中模型）”。|To speed up: select fewer steps, or choose “Fast (medium model)” for transcription.|Schneller: weniger Schritte wählen oder bei der Transkription „Schnell (mittleres Modell)“.
+现在开始吗？|Start now?|Jetzt starten?
+按你的电脑配置，已关闭：|Turned off for this computer: |Für diesen Computer deaktiviert: 
+（可在“设置”里解除限制）| (can be unlocked in Settings)| (in den Einstellungen entsperrbar)
+（按你的电脑配置估算）| (estimate for this computer)| (Schätzung für diesen Computer)
+已解除限制：所有选项都能选，但可能很慢或显存不够|Unlocked: everything available, but may be slow or run out of GPU memory|Entsperrt: alles verfügbar, kann aber langsam sein oder zu wenig Grafikspeicher haben
+预计需要|Estimated |Geschätzt 
+（不能用于 AI 加速）| (not usable for AI)| (nicht für KI nutzbar)
+没有独立显卡|no dedicated GPU|keine dedizierte GPU
+已锁定：|Locked: |Gesperrt: 
+扒谱大模型|large transcription model|großes Transkriptionsmodell
+束搜索|beam search|Strahlsuche
+声部音量地图|parts loudness map|Stimmen-Lautstärkekarte
+音质修复|restoration|Restaurierung
+去混响|de-reverb|Enthallung
+显卡：|GPU: |GPU: 
+内存：|RAM: |RAM: 
+（显存 | (VRAM | (VRAM 
+ 线程）| threads)| Threads)
+预计|est. |ca. 
+约 |about |ca. 
+ 分钟| min| Min.
+ 小时| h| Std.
 最近 2 分钟下载速度 · 最高 |Download speed, last 2 min · peak |Download-Tempo, letzte 2 Min. · max. 
 ⬇ 下载中|⬇ Downloading|⬇ Lädt
  · 剩余约 | · about | · noch ca. 
@@ -438,7 +470,7 @@ def tr(text):
     for zh, pair in FRAGMENTS:
         if zh in result:
             result = result.replace(zh, pair[index])
-    for zh, western in (("：", ": "), ("，", ", "), ("（", " ("), ("）", ")"), ("。", ". "), ("“", "“"), ("…", "…")):
+    for zh, western in (("：", ": "), ("，", ", "), ("、", ", "), ("；", "; "), ("（", " ("), ("）", ")"), ("。", ". "), ("“", "“"), ("…", "…")):
         result = result.replace(zh, western)
     return result.replace("  ", " ")
 

@@ -126,6 +126,10 @@ class ModelPool:
         self.models_dir, self.out_dir, self.pool = models_dir, out_dir, {}
 
     def get(self, model: str):
+        if model not in self.pool and FAST.get("low_vram") and self.pool:
+            import torch   # 显存小：一次只放一个模型
+            self.pool.clear()
+            torch.cuda.empty_cache()
         if model not in self.pool:
             if not os.path.isfile(os.path.join(self.models_dir, model)):
                 emit("notice", message=f"第一次使用，正在下载模型 {model}（约 900 MB）……")
@@ -532,6 +536,7 @@ def main() -> int:
     parser.add_argument("--steps", default="crowd,denoise")
     parser.add_argument("--analysis")
     parser.add_argument("--reference", help="只分析参考曲的频谱")
+    parser.add_argument("--low-vram", action="store_true", help="显存小：一次只放一个模型")
     parser.add_argument("--no-fast", action="store_true", help="不用半精度（结果和旧版逐位一致，速度慢一些）")
     args = parser.parse_args()
     try:
@@ -540,6 +545,7 @@ def main() -> int:
         pass
     try:
         FAST["on"] = not args.no_fast
+        FAST["low_vram"] = args.low_vram
         _install_hooks()
         if args.reference:
             reference_levels(args.reference)

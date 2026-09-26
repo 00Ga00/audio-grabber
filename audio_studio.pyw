@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 import concert
+import hardware
 import transcribe
 from audio_processing import ai_available, enhance_audio, install_ai, postprocess_recording
 from recording import GlobalHotkeys, RecordingController, helper_available, helper_path, install_helper, list_visible_processes
@@ -680,15 +681,18 @@ def main() -> None:
     c_opts.grid(row=4, column=0, columnspan=3, sticky="w", pady=6)
     ttk.Checkbutton(c_opts, text="去观众声", variable=c_crowd).pack(side="left")
     ttk.Checkbutton(c_opts, text="去底噪", variable=c_denoise).pack(side="left", padx=(14, 0))
-    ttk.Checkbutton(c_opts, text="音质修复（补高音）", variable=c_restore).pack(side="left", padx=(14, 0))
+    c_restore_box = ttk.Checkbutton(c_opts, text="音质修复（补高音）", variable=c_restore)
+    c_restore_box.pack(side="left", padx=(14, 0))
     c_opts2 = ttk.Frame(c_card, style="Card.TFrame")
     c_opts2.grid(row=5, column=0, columnspan=3, sticky="w", pady=(0, 6))
     ttk.Checkbutton(c_opts2, text="同时生成视频（画面不重新压缩）", variable=c_video).pack(side="left")
     c_loudness = tk.StringVar(value="和原视频一样响（推荐）")
     ttk.Label(c_opts2, text="音量", style="Card.TLabel").pack(side="left", padx=(14, 4))
     ttk.Combobox(c_opts2, textvariable=c_loudness, values=list(concert.LOUDNESS_MODES), state="readonly", width=24).pack(side="left")
-    ttk.Checkbutton(c_opts, text="分离人声和伴奏", variable=c_split).pack(side="left", padx=(14, 0))
-    ttk.Checkbutton(c_opts, text="去混响（可调现场感）", variable=c_dereverb).pack(side="left", padx=(14, 0))
+    c_split_box = ttk.Checkbutton(c_opts, text="分离人声和伴奏", variable=c_split)
+    c_split_box.pack(side="left", padx=(14, 0))
+    c_dereverb_box = ttk.Checkbutton(c_opts, text="去混响（可调现场感）", variable=c_dereverb)
+    c_dereverb_box.pack(side="left", padx=(14, 0))
     ttk.Checkbutton(c_opts2, text="另存人声、伴奏分轨", variable=c_stems).pack(side="left", padx=(14, 0))
 
     # ---- 调音：滑块 + 频谱可视化
@@ -994,6 +998,7 @@ def main() -> None:
 
     def remember_settings():
         presets["_last"] = current_settings()
+        prefs["steps"] = {k: bool(v.get()) for k, v in (("crowd", c_crowd), ("denoise", c_denoise), ("restore", c_restore), ("split", c_split), ("dereverb", c_dereverb))}
         concert.save_presets(presets)
 
     if start_values.get("loudness") in loud_names:
@@ -1100,6 +1105,36 @@ def main() -> None:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    # ---- 电脑配置：按显卡/显存/内存锁住太慢的选项、估计处理时间
+    hw = {"info": hardware.detect(use_cache=True) if hardware.CACHE.is_file() else {"tier": "strong", "pending": True}}
+
+    def estimate_text(keys, seconds):
+        if seconds <= 0 or hw["info"].get("pending"):
+            return ""
+        return hardware.fmt_minutes(hardware.estimate(hw["info"], keys, seconds) * float(prefs.get("hw_scale", 1.0)))
+
+    def confirm_estimate(keys, seconds):
+        """很久的任务先问一下；返回 False 表示用户不做了。"""
+        if seconds <= 0 or hw["info"].get("pending"):
+            return True
+        est = hardware.estimate(hw["info"], keys, seconds) * float(prefs.get("hw_scale", 1.0))
+        if est < 20 * 60:
+            return True
+        return messagebox.askyesno(APP_TITLE, f"按你的电脑配置，预计需要{hardware.fmt_minutes(est)}。\n"
+                                              f"{hardware.TIER_NAMES.get(hw['info'].get('tier'), '')}\n\n"
+                                              "想快一点：少勾几项处理，或扒谱选“快速（中模型）”。\n现在开始吗？")
+
+    def learn_speed(keys, seconds, elapsed):
+        """用实际用时校正以后的估计（每台电脑不一样）。"""
+        if seconds < 60 or hw["info"].get("pending"):
+            return
+        ratio = elapsed / max(hardware.estimate(hw["info"], keys, seconds), 1)
+        prefs["hw_scale"] = round(min(max(0.5 * float(prefs.get("hw_scale", 1.0)) + 0.5 * ratio, 0.2), 5.0), 3)
+        try:
+            concert.save_presets(presets)
+        except Exception:
+            pass
+
     def selected_steps():
         return [name for name, var in (("crowd", c_crowd), ("denoise", c_denoise), ("restore", c_restore), ("split", c_split), ("dereverb", c_dereverb)) if var.get()]
 
@@ -1114,6 +1149,8 @@ def main() -> None:
             messagebox.showinfo(APP_TITLE, "第一次使用需要先安装演唱会降噪组件。")
             return
         steps = selected_steps()
+        if not preview and not confirm_estimate(steps, c_last.get("duration") or 0.0):
+            return
         start_at = None
         if preview:
             try:
@@ -1135,6 +1172,8 @@ def main() -> None:
         c_progress.stop(); c_progress.configure(mode="determinate", value=0)
         c_status.set("正在生成 30 秒试听……" if preview else "正在处理整段……")
         c_write("—" * 60)
+        if not preview and estimate_text(steps, c_last.get("duration") or 0.0):
+            c_write("预计需要" + estimate_text(steps, c_last.get("duration") or 0.0) + "（按你的电脑配置估算）")
         settings = current_settings()
         output_dir = c_output_dir.get().strip() or os.path.dirname(source)
         make_video = c_video.get()
@@ -1146,7 +1185,11 @@ def main() -> None:
 
         def worker():
             try:
-                session = concert.run_ai(source, ffmpeg, steps, start_at, log=log, progress=progress, fast=fast)
+                began = time.time()
+                session = concert.run_ai(source, ffmpeg, steps, start_at, log=log, progress=progress, fast=fast,
+                                         low_vram=hardware.low_vram(hw["info"]))
+                if not preview:
+                    learn_speed(steps, session["info"].get("duration", 0), time.time() - began)
                 if preview:
                     result = concert.render_preview(ffmpeg, session, settings)
                 else:
@@ -1247,7 +1290,7 @@ def main() -> None:
                     events.put(("concert_progress", ((i + frac) / total, f"第 {i + 1}/{total} 个 · {stage}")))
                 try:
                     session = concert.run_ai(source, ffmpeg, steps, None, log=lambda t: events.put(("concert_log", t)),
-                                             progress=progress, fast=fast)
+                                             progress=progress, fast=fast, low_vram=hardware.low_vram(hw["info"]))
                     result = concert.export(ffmpeg, session, settings, output_dir or os.path.dirname(source), make_video,
                                             lambda t: events.put(("concert_log", t)), stems=make_stems)
                     events.put(("concert_log", "✔ " + (result.get("video") or result["audio"])))
@@ -1326,7 +1369,8 @@ def main() -> None:
     s_opts.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 2))
     ttk.Checkbutton(s_opts, text="先去观众声和底噪（现场录音推荐）", variable=s_clean).pack(side="left")
     ttk.Label(s_opts, text="精度", style="Card.TLabel").pack(side="left", padx=(14, 4))
-    ttk.Combobox(s_opts, textvariable=s_size, values=list(transcribe.SIZES), state="readonly", width=24).pack(side="left")
+    s_size_box = ttk.Combobox(s_opts, textvariable=s_size, values=list(transcribe.SIZES), state="readonly", width=24)
+    s_size_box.pack(side="left")
     s_inst_label = ttk.Label(s_opts, text="乐器：自动识别", style="Muted.Card.TLabel")
     s_inst_label.pack(side="left", padx=(14, 4))
 
@@ -1509,8 +1553,16 @@ def main() -> None:
             open_token_dialog()
             return
         ffmpeg = core.find_ffmpeg()
+        size, beam = transcribe.SIZES.get(s_size.get(), ("medium", 1))
+        keys = (["crowd", "denoise"] if s_clean.get() else []) + ["score_beam" if beam > 1 else "score_" + size]
+        try:
+            seconds = concert.probe(ffmpeg, source).get("duration", 0.0)
+        except Exception:
+            seconds = 0.0
+        if not confirm_estimate(keys, seconds):
+            return
         set_score_busy(True)
-        s_status.set("正在识别音符……")
+        s_status.set("正在识别音符……" + (f"（预计{estimate_text(keys, seconds)}）" if estimate_text(keys, seconds) else ""))
 
         def worker():
             try:
@@ -1707,8 +1759,16 @@ def main() -> None:
     ttk.Button(g_card, text="安装 / 重新安装", command=install_score).grid(row=6, column=2, sticky="e")
     ttk.Button(g_card, text="Hugging Face 授权…", command=open_token_dialog).grid(row=6, column=3, sticky="e", padx=(6, 0))
     ttk.Button(g_card, text="安装 / 重新安装", command=install_ai_clicked).grid(row=7, column=2, sticky="e")
+    ttk.Label(g_card, text="电脑配置", style="Card.TLabel").grid(row=9, column=0, sticky="nw", pady=(8, 3))
+    g_hw = ttk.Label(g_card, text="正在检查……", style="Muted.Card.TLabel", wraplength=int(430 * scale), justify="left")
+    g_hw.grid(row=9, column=1, sticky="w", padx=8, pady=(8, 3))
+    g_unlock = tk.BooleanVar(value=bool(prefs.get("unlocked", False)))
+    g_hw_side = ttk.Frame(g_card, style="Card.TFrame")
+    g_hw_side.grid(row=9, column=2, columnspan=2, sticky="ne", pady=(8, 3))
+    ttk.Button(g_hw_side, text="重新检测", command=lambda: redetect()).pack(side="left")
+    ttk.Checkbutton(g_hw_side, text="解除限制", variable=g_unlock, command=lambda: unlock_changed()).pack(side="left", padx=(8, 0))
     section(10, "下载与安装进度")
-    g_transfer = tk.Canvas(g_card, background="#f7f9fc", highlightthickness=0, height=int(150 * scale))
+    g_transfer = tk.Canvas(g_card, background="#f7f9fc", highlightthickness=0, height=int(118 * scale))
     g_transfer.grid(row=11, column=0, columnspan=4, sticky="ew")
 
     section(12, "处理")
@@ -1746,6 +1806,67 @@ def main() -> None:
 
     refresh_settings()
 
+    def apply_hardware(first=False):
+        info = hw["info"]
+        if info.get("pending"):
+            return
+        unlocked = bool(prefs.get("unlocked", False))
+        lock = hardware.locks(info, unlocked)
+        tier = info.get("tier", "weak")
+        # 第一次在这台电脑上：按档位设默认勾选；扒谱默认中模型（中、大听感差别不大）
+        # 上次自己勾的处理步骤；换了电脑档位或从没存过，就用这个档位的默认
+        if prefs.get("hw_tier") != tier:
+            prefs.pop("steps", None)
+            prefs["hw_tier"] = tier
+            concert.save_presets(presets)
+        chosen = prefs.get("steps") or hardware.DEFAULTS[tier]
+        for key, var in (("crowd", c_crowd), ("denoise", c_denoise), ("restore", c_restore), ("split", c_split), ("dereverb", c_dereverb)):
+            var.set(bool(chosen.get(key, var.get())))
+        if not prefs.get("score_default_set"):
+            s_size.set(hardware.default_score_size(list(transcribe.SIZES), info))
+            prefs["score_default_set"] = True
+            concert.save_presets(presets)
+        for key, var, box in (("restore", c_restore, c_restore_box), ("dereverb", c_dereverb, c_dereverb_box)):
+            if key in lock:
+                var.set(False)
+                box.configure(state="disabled")
+            else:
+                box.configure(state="normal")
+        allowed = hardware.score_sizes(list(transcribe.SIZES), info, unlocked)
+        s_size_box.configure(values=allowed)
+        if s_size.get() not in allowed:
+            s_size.set(hardware.default_score_size(allowed, info))
+        s_map_button.configure(state="disabled" if "stems" in lock else "normal")
+        text = hardware.describe(info) + "\n" + hardware.TIER_NAMES.get(tier, "")
+        if lock:
+            text += " · 已锁定：" + "、".join(hardware.LOCK_NAMES[k] for k in lock)
+        elif tier != "strong" and unlocked:
+            text += "\n已解除限制：所有选项都能选，但可能很慢或显存不够"
+        g_hw.configure(text=text)
+        closed = [{"restore": "音质修复", "dereverb": "去混响"}[k] for k in ("restore", "dereverb") if k in lock]
+        if closed and first:
+            c_write("按你的电脑配置，已关闭：" + "、".join(closed) + "（可在“设置”里解除限制）")
+
+    def unlock_changed():
+        if g_unlock.get() and not messagebox.askyesno(APP_TITLE, "解除后所有选项都能选，但在这台电脑上可能要很久，或者显存不够而失败。确定吗？"):
+            g_unlock.set(False)
+            return
+        prefs["unlocked"] = bool(g_unlock.get())
+        concert.save_presets(presets)
+        apply_hardware()
+
+    def redetect():
+        g_hw.configure(text="正在检查……")
+
+        def worker():
+            info = hardware.detect()
+            events.put(("hardware", info))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    apply_hardware(first=True)
+    redetect()   # 启动后在后台重新检查一次（换了显卡、升级内存也能跟上）
+
     def fmt_bytes(n):
         return f"{n / 1e9:.2f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB" if n >= 1e6 else f"{n / 1e3:.0f} KB"
 
@@ -1778,7 +1899,7 @@ def main() -> None:
             c.create_text(w / 2, h / 2, text="现在没有进行中的下载。安装组件或第一次用某个模型时，这里会显示下载进度和速度。",
                           fill="#8a94a6", font=("Microsoft YaHei UI", 9), width=w - 40, justify="center")
             return
-        c.create_text(pad, 14, anchor="w", text=(title or "最近一次") + ("" if busy else " · " + (snap["status"] or "已结束")),
+        c.create_text(pad, 12, anchor="w", text=(title or "最近一次") + ("" if busy else " · " + (snap["status"] or "已结束")),
                       fill="#1f2a3d", font=("Microsoft YaHei UI", 10, "bold"))
         # 当前文件 + 进度条
         done, total, speed = snap["done"], snap["total"], snap["speed"]
@@ -1786,14 +1907,14 @@ def main() -> None:
             frac = done / total if total else 0
             left = f"{snap['name']}  {fmt_bytes(done)} / {fmt_bytes(total)}（{frac * 100:.0f}%）" if total else snap["name"]
             right = (f"{speed / 1e6:.1f} MB/s" if speed > 0 else "等待数据…") + (f" · 剩余约 {fmt_eta((total - done) / speed)}" if speed > 0 and total else "")
-            c.create_text(pad, 36, anchor="w", text=left, fill="#1f2a3d", font=("Microsoft YaHei UI", 9))
-            c.create_text(w - pad, 36, anchor="e", text=right, fill="#4c5a70", font=("Microsoft YaHei UI", 9))
-            c.create_rectangle(pad, 48, w - pad, 58, fill="#e3e9f2", outline="")
-            c.create_rectangle(pad, 48, pad + (w - 2 * pad) * min(frac, 1), 58, fill=ACCENT, outline="")
+            c.create_text(pad, 31, anchor="w", text=left, fill="#1f2a3d", font=("Microsoft YaHei UI", 9))
+            c.create_text(w - pad, 31, anchor="e", text=right, fill="#4c5a70", font=("Microsoft YaHei UI", 9))
+            c.create_rectangle(pad, 41, w - pad, 49, fill="#e3e9f2", outline="")
+            c.create_rectangle(pad, 41, pad + (w - 2 * pad) * min(frac, 1), 49, fill=ACCENT, outline="")
         elif busy:
-            c.create_text(pad, 36, anchor="w", text=(snap["status"] or "准备中…")[:120], fill="#4c5a70", font=("Microsoft YaHei UI", 9))
+            c.create_text(pad, 31, anchor="w", text=(snap["status"] or "准备中…")[:120], fill="#4c5a70", font=("Microsoft YaHei UI", 9))
         # 速度曲线（最近 2 分钟）
-        top, bottom = 68, h - 30
+        top, bottom = 58, h - 20
         series = speed_series(snap["samples"], time.time())
         peak = max(series + [1e5])
         c.create_line(pad, bottom, w - pad, bottom, fill="#d5dce7")
@@ -1809,7 +1930,7 @@ def main() -> None:
         # 已完成的文件
         finished = "   ".join(f"✓ {name} {fmt_bytes(size)}" for name, size in snap["finished"][-4:])
         status = snap["status"] if busy else ""
-        c.create_text(pad, h - 12, anchor="w", text=(finished or status)[:160], fill="#3f8f5a" if finished else "#8a94a6",
+        c.create_text(pad, h - 8, anchor="w", text=(finished or status)[:160], fill="#3f8f5a" if finished else "#8a94a6",
                       font=("Microsoft YaHei UI", 8))
 
     def draw_side_transfer(snap):
@@ -1998,6 +2119,10 @@ def main() -> None:
                         c_open_button.configure(state="normal")
                     c_status.set(f"批量处理结束：成功 {ok} 个" + (f"，失败 {len(failed)} 个" if failed else "") + (f"，未处理 {total - ok - len(failed)} 个（已取消）" if ok + len(failed) < total else ""))
                     root.bell()
+                elif kind == "hardware":
+                    first = hw["info"].get("pending", False)
+                    hw["info"] = value
+                    apply_hardware(first=first)
                 elif kind == "dropped":
                     media = [f for f in value if os.path.splitext(f)[1].lower() in concert.MEDIA_EXTENSIONS]
                     page = notebook.current

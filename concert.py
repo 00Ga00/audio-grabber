@@ -705,7 +705,7 @@ def session_root() -> Path:
 
 def run_ai(source: str, ffmpeg: str, steps: list[str], preview_start: float | None = None,
            preview_length: float = 30.0, log=lambda _m: None, progress=lambda _f, _s="": None,
-           fast: bool = True) -> dict:
+           fast: bool = True, low_vram: bool = False) -> dict:
     """运行 AI 部分（慢），返回一个 session；之后可以用 render() 按不同设置反复导出（快）。"""
     import json
     import shutil as _shutil
@@ -750,7 +750,8 @@ def run_ai(source: str, ffmpeg: str, steps: list[str], preview_start: float | No
             progress(0.05 + 0.9 * float(event.get("fraction", 0)), event.get("stage", ""))
 
     run_worker(["--input", original, "--output", processed, "--models", str(MODELS_DIR),
-                "--steps", ",".join(steps), "--analysis", analysis_path] + ([] if fast else ["--no-fast"]), on_event)
+                "--steps", ",".join(steps), "--analysis", analysis_path] + ([] if fast else ["--no-fast"])
+               + (["--low-vram"] if low_vram else []), on_event)
     with open(analysis_path, encoding="utf-8") as handle:
         analysis = json.load(handle)
     progress(0.97, "AI 处理完成")
