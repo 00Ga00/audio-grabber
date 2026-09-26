@@ -13,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 
+import concert
 from audio_processing import ai_available, enhance_audio, install_ai, postprocess_recording
 from recording import GlobalHotkeys, RecordingController, helper_available, helper_path, install_helper, list_visible_processes
 
@@ -495,6 +496,444 @@ def main() -> None:
     e_install_button.configure(command=install_ai_clicked)
     e_start_button.configure(command=start_enhance)
 
+    # ------------------------------------------------------------- 演唱会降噪
+    concert_tab = ttk.Frame(notebook, padding=8)
+    notebook.insert(1, concert_tab, text="演唱会降噪")
+    c_card = card(concert_tab)
+    c_card.columnconfigure(1, weight=1)
+    c_card.rowconfigure(11, weight=1)
+    c_input = tk.StringVar()
+    c_output_dir = tk.StringVar(value=saved["outdir"])
+    c_crowd = tk.BooleanVar(value=True)
+    c_denoise = tk.BooleanVar(value=True)
+    c_restore = tk.BooleanVar(value=True)
+    c_split = tk.BooleanVar(value=True)
+    c_stems = tk.BooleanVar(value=False)
+    c_strength = tk.StringVar(value="标准（推荐）")
+    c_video = tk.BooleanVar(value=True)
+    c_normalize = tk.BooleanVar(value=False)
+    c_preview_at = tk.StringVar(value="1:00")
+    c_status = tk.StringVar(value="选择一段演唱会视频，先试听 30 秒，满意再处理整段")
+    c_last = {"path": None, "preview": None}
+
+    ttk.Label(c_card, text="演唱会降噪", style="Card.TLabel", font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
+    ttk.Label(c_card, text="从现场视频里取出声音，用音乐专用 AI 去掉观众尖叫、鼓掌和底噪，尽量保持原声", style="Muted.Card.TLabel").grid(row=1, column=0, columnspan=3, sticky="w", pady=(1, 12))
+    ttk.Label(c_card, text="视频/音频", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=5)
+    ttk.Entry(c_card, textvariable=c_input).grid(row=2, column=1, sticky="ew", padx=8)
+
+    def choose_concert_file():
+        chosen = filedialog.askopenfilename(filetypes=concert.MEDIA_TYPES)
+        if not chosen:
+            return
+        c_input.set(chosen)
+        ffmpeg = core.find_ffmpeg()
+        try:
+            info = concert.probe(ffmpeg, chosen)
+            minutes = info["duration"] / 60
+            c_status.set(f"时长 {minutes:.1f} 分钟" + ("（含画面，可生成降噪后的视频）" if info["has_video"] else "（纯音频）"))
+            c_last["duration"] = info["duration"]
+            # 试听点放在中间（演唱会中段通常最有代表性），并保证后面还有 30 秒
+            point = int(max(0.0, min(info["duration"] / 2, info["duration"] - 30)))
+            c_preview_at.set(f"{point // 3600}:{point % 3600 // 60:02d}:{point % 60:02d}" if point >= 3600 else f"{point // 60}:{point % 60:02d}")
+        except Exception as error:
+            c_status.set(str(error))
+
+    ttk.Button(c_card, text="选择…", command=choose_concert_file).grid(row=2, column=2)
+    ttk.Label(c_card, text="保存到", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=5)
+    ttk.Entry(c_card, textvariable=c_output_dir).grid(row=3, column=1, sticky="ew", padx=8)
+    ttk.Button(c_card, text="浏览…", command=lambda: choose_directory(c_output_dir)).grid(row=3, column=2)
+
+    c_opts = ttk.Frame(c_card, style="Card.TFrame")
+    c_opts.grid(row=4, column=0, columnspan=3, sticky="w", pady=6)
+    ttk.Checkbutton(c_opts, text="去观众声（尖叫/鼓掌）", variable=c_crowd).pack(side="left")
+    ttk.Checkbutton(c_opts, text="去底噪（嘶嘶/风声）", variable=c_denoise).pack(side="left", padx=(14, 0))
+    ttk.Checkbutton(c_opts, text="音质修复（补回高音）", variable=c_restore).pack(side="left", padx=(14, 0))
+    c_opts2 = ttk.Frame(c_card, style="Card.TFrame")
+    c_opts2.grid(row=5, column=0, columnspan=3, sticky="w", pady=(0, 6))
+    ttk.Checkbutton(c_opts2, text="同时生成视频（画面不重新压缩）", variable=c_video).pack(side="left")
+    ttk.Checkbutton(c_opts2, text="统一音量（会轻微改变动态）", variable=c_normalize).pack(side="left", padx=(14, 0))
+    ttk.Checkbutton(c_opts, text="分离人声和伴奏（分开调）", variable=c_split).pack(side="left", padx=(14, 0))
+    ttk.Checkbutton(c_opts2, text="另存人声、伴奏分轨（可导入 Cubase 等软件）", variable=c_stems).pack(side="left", padx=(14, 0))
+
+    # ---- 调音：滑块 + 频谱可视化
+    presets = concert.load_presets()
+    start_values = dict(concert.DEFAULT_SETTINGS, **{k: v for k, v in presets.get("_last", {}).items() if k in concert.DEFAULT_SETTINGS})
+    c_normalize.set(bool(start_values.get("normalize", False)))
+    SLIDER_PAGES = [
+        ("整体", [  # 键, 名称, 最小, 最大, 显示方式
+            ("strength", "降噪强度", 0.5, 1.0, "pct"),
+            ("auto", "自动音色校正", 0.0, 1.0, "pct"),
+            ("bass", "低频（轰）", -12.0, 6.0, "db"),
+            ("mid", "中频（人声/吉他）", -6.0, 8.0, "db"),
+            ("treble", "高频（清晰）", -8.0, 6.0, "db"),
+            ("air", "补回的高音（音质修复）", 0.0, 1.0, "pct"),
+        ]),
+        ("人声与伴奏（间奏）", [
+            ("vocal_level", "人声音量", -6.0, 6.0, "db"),
+            ("inst_level", "伴奏音量", -12.0, 6.0, "db"),
+            ("inst_bass", "伴奏低频（轰）", -12.0, 6.0, "db"),
+            ("inst_harsh", "伴奏刺耳（2–5 kHz）", -10.0, 4.0, "db"),
+            ("inst_treble", "伴奏高频", -10.0, 6.0, "db"),
+        ]),
+    ]
+    SLIDERS = [item for _, items in SLIDER_PAGES for item in items]
+    c_vars = {key: tk.DoubleVar(value=float(start_values[key])) for key, *_ in SLIDERS}
+    c_tune = ttk.Frame(c_card, style="Card.TFrame")
+    c_tune.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(2, 6))
+    c_tune.columnconfigure(1, weight=1)
+    c_sliders = ttk.Frame(c_tune, style="Card.TFrame")
+    c_sliders.grid(row=0, column=0, sticky="nw")
+    c_pages = ttk.Notebook(c_sliders)
+    c_pages.grid(row=0, column=0, columnspan=3, sticky="w")
+    c_value_labels = {}
+
+    def fmt(key, value):
+        kind = next(k for k_, _, _, _, k in SLIDERS if k_ == key)
+        return f"{value * 100:.0f}%" if kind == "pct" else f"{value:+.1f} dB"
+
+    def current_settings():
+        values = {key: round(var.get(), 3) for key, var in c_vars.items()}
+        values["normalize"] = bool(c_normalize.get())
+        return values
+
+    for page_name, items in SLIDER_PAGES:
+        page = ttk.Frame(c_pages, style="Card.TFrame", padding=(4, 4))
+        c_pages.add(page, text=page_name)
+        for row, (key, name, low, high, kind) in enumerate(items):
+            ttk.Label(page, text=name, style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=0)
+            slider = ttk.Scale(page, from_=low, to=high, variable=c_vars[key], length=int(170 * scale),
+                               command=lambda _v, k=key: on_setting_change(k))
+            slider.grid(row=row, column=1, padx=6)
+            slider.bind("<Double-Button-1>", lambda _e, k=key: (c_vars[k].set(float(concert.DEFAULT_SETTINGS[k])), on_setting_change(k)))
+            label = ttk.Label(page, text=fmt(key, c_vars[key].get()), style="Muted.Card.TLabel", width=9)
+            label.grid(row=row, column=2, sticky="w")
+            c_value_labels[key] = label
+        if page_name.startswith("人声"):
+            ttk.Label(page, text="只影响伴奏，人声不变；需勾选“分离人声和伴奏”", style="Muted.Card.TLabel").grid(
+                row=len(items), column=0, columnspan=3, sticky="w", pady=(2, 0))
+
+    c_preset_row = ttk.Frame(c_sliders, style="Card.TFrame")
+    c_preset_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    c_preset = tk.StringVar(value="")
+    c_preset_box = ttk.Combobox(c_preset_row, textvariable=c_preset, state="readonly", width=14)
+    c_preset_box.pack(side="left")
+
+    def refresh_presets():
+        names = [name for name in presets if not name.startswith("_")]
+        c_preset_box.configure(values=["默认"] + names)
+
+    def apply_values(values):
+        for key, var in c_vars.items():
+            if key in values:
+                var.set(float(values[key]))
+        if "normalize" in values:
+            c_normalize.set(bool(values["normalize"]))
+        on_setting_change(None)
+
+    def preset_chosen(_event=None):
+        name = c_preset.get()
+        apply_values(concert.DEFAULT_SETTINGS if name == "默认" else presets.get(name, {}))
+
+    def save_preset():
+        from tkinter import simpledialog
+        name = simpledialog.askstring(APP_TITLE, "给这组设置起个名字（比如歌手名）：", parent=root)
+        if not name or name.startswith("_") or name == "默认":
+            return
+        presets[name.strip()] = current_settings()
+        concert.save_presets(presets)
+        refresh_presets()
+        c_preset.set(name.strip())
+
+    def delete_preset():
+        name = c_preset.get()
+        if name in presets and not name.startswith("_") and messagebox.askyesno(APP_TITLE, f"删除预设“{name}”？"):
+            presets.pop(name)
+            concert.save_presets(presets)
+            refresh_presets()
+            c_preset.set("")
+
+    c_preset_box.bind("<<ComboboxSelected>>", preset_chosen)
+    ttk.Button(c_preset_row, text="存为预设", command=save_preset).pack(side="left", padx=(6, 0))
+    ttk.Button(c_preset_row, text="删除", command=delete_preset).pack(side="left", padx=(4, 0))
+    ttk.Button(c_preset_row, text="恢复默认", command=lambda: (c_preset.set("默认"), apply_values(concert.DEFAULT_SETTINGS))).pack(side="left", padx=(4, 0))
+    refresh_presets()
+
+    c_canvas = tk.Canvas(c_tune, height=int(165 * scale), background="#ffffff", highlightthickness=1, highlightbackground="#dde3ea")
+    c_canvas.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
+
+    c_session = {"preview": None, "full": None, "dirty": True}
+
+    def active_analysis():
+        session = c_session.get("full") or c_session.get("preview")
+        return session["analysis"] if session else None
+
+    def draw_spectrum(_event=None):
+        import math
+        cv = c_canvas
+        cv.delete("all")
+        w, h = max(cv.winfo_width(), 200), max(cv.winfo_height(), 120)
+        left, right, top, bottom = 34, 10, 8, 20
+        fmin, fmax = 30.0, 20000.0
+
+        def x_of(f):
+            return left + (math.log10(f) - math.log10(fmin)) / (math.log10(fmax) - math.log10(fmin)) * (w - left - right)
+
+        for f, text in ((100, "100"), (1000, "1k"), (10000, "10k")):
+            cv.create_line(x_of(f), top, x_of(f), h - bottom, fill="#eef1f5")
+            cv.create_text(x_of(f), h - bottom + 9, text=text, fill="#8a94a3", font=("Microsoft YaHei UI", 8))
+        cv.create_text(x_of(fmax) - 2, h - bottom + 9, text="Hz", anchor="e", fill="#8a94a3", font=("Microsoft YaHei UI", 8))
+        analysis = active_analysis()
+        settings = current_settings()
+        # 均衡曲线（橙色，中线 = 0 dB，上下各 ±15 dB）
+        mid_y = top + (h - top - bottom) / 2
+
+        def y_eq(g):
+            return mid_y - g / 15 * (h - top - bottom) / 2
+
+        cv.create_line(left, mid_y, w - right, mid_y, fill="#f3d7b5", dash=(3, 3))
+        eq = concert.eq_curve(settings, analysis)
+        cv.create_line(*[v for f, g in eq if fmin <= f <= fmax for v in (x_of(f), y_eq(g))], fill="#e8871e", width=2, smooth=True)
+        if analysis and analysis.get("vocals"):
+            eq_inst = concert.eq_curve(settings, analysis, "inst")
+            if any(abs(a[1] - b[1]) > 0.05 for a, b in zip(eq, eq_inst)):
+                cv.create_line(*[v for f, g in eq_inst if fmin <= f <= fmax for v in (x_of(f), y_eq(g))],
+                               fill="#9b59b6", width=2, smooth=True, dash=(4, 3))
+                cv.create_text(left + 4, top + 8, text="紫虚线 = 伴奏均衡", anchor="w", fill="#9b59b6", font=("Microsoft YaHei UI", 8))
+        cv.create_text(left - 4, y_eq(12), text="+12", anchor="e", fill="#e8871e", font=("Microsoft YaHei UI", 7))
+        cv.create_text(left - 4, y_eq(-12), text="-12", anchor="e", fill="#e8871e", font=("Microsoft YaHei UI", 7))
+        if not analysis:
+            cv.create_text((w + left) / 2, top + 34, text="橙线 = 你设置的均衡\n生成试听后，这里会显示处理前后的频谱对比",
+                           fill="#8a94a3", font=("Microsoft YaHei UI", 9), justify="center")
+            return
+        centers = analysis["centers"]
+        mids = [v for c, v in zip(centers, analysis["original"]) if 200 <= c <= 2000]
+        ref = sum(mids) / len(mids)
+        after = concert.predicted_levels(settings, analysis)
+
+        def y_spec(v):  # 频谱：+18 dB（顶）~ -42 dB（底），相对原声中频
+            return top + (18 - (v - ref)) / 60 * (h - top - bottom)
+
+        def poly(levels, color, width_, dash=None):
+            pts = [v for c, lv in zip(centers, levels) for v in (x_of(c), min(max(y_spec(lv), top), h - bottom))]
+            cv.create_line(*pts, fill=color, width=width_, smooth=True, dash=dash)
+
+        poly(analysis["original"], "#9aa4b2", 2)
+        poly(after, "#2f6fdf", 2)
+        if analysis.get("cutoff"):
+            xc = x_of(analysis["cutoff"])
+            cv.create_line(xc, top, xc, h - bottom, fill="#c9d3e0", dash=(2, 4))
+            cv.create_text(xc - 3, h - bottom - 8, text="压缩截止", anchor="e", fill="#8a94a3", font=("Microsoft YaHei UI", 7))
+        for i, (color, text) in enumerate((("#9aa4b2", "原声"), ("#2f6fdf", "调整后"), ("#e8871e", "均衡"))):
+            cv.create_line(w - 150 + i * 48, top + 8, w - 136 + i * 48, top + 8, fill=color, width=3)
+            cv.create_text(w - 133 + i * 48, top + 8, text=text, anchor="w", fill="#4a5563", font=("Microsoft YaHei UI", 8))
+
+    c_canvas.bind("<Configure>", draw_spectrum)
+
+    def on_setting_change(key):
+        for k, label in c_value_labels.items():
+            label.configure(text=fmt(k, c_vars[k].get()))
+        c_session["dirty"] = True
+        draw_spectrum()
+        presets["_last"] = current_settings()
+
+    def remember_settings():
+        presets["_last"] = current_settings()
+        concert.save_presets(presets)
+
+    c_normalize.trace_add("write", lambda *_: on_setting_change(None))
+
+    def forget_sessions(*_):
+        c_session.update(preview=None, full=None, dirty=True)
+        for button in (c_play_a, c_play_b, c_reexport_button):
+            button.configure(state="disabled")
+        draw_spectrum()
+
+    for var in (c_crowd, c_denoise, c_restore, c_split, c_input):
+        var.trace_add("write", forget_sessions)
+
+    c_prev = ttk.Frame(c_card, style="Card.TFrame")
+    c_prev.grid(row=7, column=0, columnspan=3, sticky="w", pady=(4, 6))
+    ttk.Label(c_prev, text="试听：从", style="Card.TLabel").pack(side="left")
+    ttk.Entry(c_prev, textvariable=c_preview_at, width=7).pack(side="left", padx=4)
+    ttk.Label(c_prev, text="开始的 30 秒", style="Card.TLabel").pack(side="left")
+    c_preview_button = ttk.Button(c_prev, text="生成试听（AI）")
+    c_preview_button.pack(side="left", padx=(10, 0))
+    c_play_a = ttk.Button(c_prev, text="▶ 原声", state="disabled", command=lambda: concert.play_wav(c_last["preview"]["preview_original"]))
+    c_play_a.pack(side="left", padx=(10, 0))
+    c_play_b = ttk.Button(c_prev, text="▶ 调整后", state="disabled")
+    c_play_b.pack(side="left", padx=(6, 0))
+    c_stop = ttk.Button(c_prev, text="■ 停止", command=lambda: concert.play_wav(None))
+    c_stop.pack(side="left", padx=(6, 0))
+
+    c_buttons = ttk.Frame(c_card, style="Card.TFrame")
+    c_buttons.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(6, 6))
+    c_buttons.columnconfigure(0, weight=1)
+    c_start_button = ttk.Button(c_buttons, text="开始处理整段", style="Primary.TButton")
+    c_start_button.grid(row=0, column=0, sticky="ew")
+    c_reexport_button = ttk.Button(c_buttons, text="按当前设置重新导出", state="disabled")
+    c_reexport_button.grid(row=0, column=1, padx=(8, 0))
+    c_install_button = ttk.Button(c_buttons, text="安装演唱会降噪组件")
+    c_install_button.grid(row=0, column=2, padx=(8, 0))
+    c_open_button = ttk.Button(c_buttons, text="打开文件", state="disabled", command=lambda: open_path(c_last["path"]))
+    c_open_button.grid(row=0, column=3, padx=(8, 0))
+    c_progress = ttk.Progressbar(c_card, maximum=100)
+    c_progress.grid(row=9, column=0, columnspan=3, sticky="ew")
+    ttk.Label(c_card, textvariable=c_status, style="Muted.Card.TLabel").grid(row=10, column=0, columnspan=3, sticky="w", pady=5)
+    c_log = tk.Text(c_card, height=3, state="disabled", wrap="word", relief="flat", background="#f7f9fc", font=("Consolas", 9))
+    c_log.grid(row=11, column=0, columnspan=3, sticky="nsew")
+    c_ai_label = ttk.Label(c_card, text="", style="Muted.Card.TLabel")
+    c_ai_label.grid(row=12, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+    def c_write(message):
+        c_log.configure(state="normal")
+        c_log.insert("end", str(message).rstrip() + "\n")
+        c_log.see("end")
+        c_log.configure(state="disabled")
+
+    def update_concert_label():
+        if concert.ai_available():
+            c_ai_label.configure(text="AI 组件：已安装（Mel-Band RoFormer 去观众声 / 去底噪模型）")
+            c_install_button.configure(text="重新安装组件")
+        else:
+            c_ai_label.configure(text="AI 组件：未安装。第一次使用请点“安装演唱会降噪组件”（约 4 GB，有 NVIDIA 显卡会自动用显卡加速）")
+            c_install_button.configure(text="安装演唱会降噪组件（约 4 GB）")
+
+    update_concert_label()
+
+    def set_concert_busy(busy):
+        state["concert_busy"] = busy
+        for button in (c_start_button, c_preview_button, c_install_button):
+            button.configure(state="disabled" if busy else "normal")
+
+    def install_concert_clicked():
+        if state.get("concert_busy"):
+            return
+        if not messagebox.askyesno(APP_TITLE, "将下载并安装演唱会降噪组件（约 4 GB，需要联网，可能要 10～30 分钟）。\n安装完成后可以离线使用。现在开始吗？"):
+            return
+        set_concert_busy(True)
+        c_status.set("正在安装演唱会降噪组件……")
+        c_progress.configure(mode="indeterminate"); c_progress.start(12)
+
+        def worker():
+            try:
+                concert.install_ai(lambda text: events.put(("concert_log", text)))
+                events.put(("concert_install_done", None))
+            except Exception as error:
+                events.put(("concert_install_error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def selected_steps():
+        return [name for name, var in (("crowd", c_crowd), ("denoise", c_denoise), ("restore", c_restore), ("split", c_split)) if var.get()]
+
+    def concert_job(preview):
+        if state.get("concert_busy"):
+            return
+        source = c_input.get().strip()
+        if not os.path.isfile(source):
+            messagebox.showwarning(APP_TITLE, "请先选择一个视频或音频文件。")
+            return
+        if not concert.ai_available():
+            messagebox.showinfo(APP_TITLE, "第一次使用需要先安装演唱会降噪组件。")
+            return
+        steps = selected_steps()
+        start_at = None
+        if preview:
+            try:
+                start_at = core.parse_time(c_preview_at.get()) or 0.0
+            except ValueError as error:
+                messagebox.showwarning(APP_TITLE, str(error))
+                return
+            duration = c_last.get("duration") or 0.0
+            if duration and start_at > max(0.0, duration - 30):
+                start_at = max(0.0, duration - 30)
+        ffmpeg = core.find_ffmpeg()
+        if not ffmpeg:
+            messagebox.showerror(APP_TITLE, "找不到 ffmpeg，请重新运行 start.bat。")
+            return
+        remember_settings()
+        concert.play_wav(None)
+        set_concert_busy(True)
+        c_open_button.configure(state="disabled")
+        c_progress.stop(); c_progress.configure(mode="determinate", value=0)
+        c_status.set("正在生成 30 秒试听……" if preview else "正在处理整段……")
+        c_write("—" * 60)
+        settings = current_settings()
+        output_dir = c_output_dir.get().strip() or os.path.dirname(source)
+        make_video = c_video.get()
+        make_stems = c_stems.get()
+        log = lambda text: events.put(("concert_log", text))
+        progress = lambda frac, stage="": events.put(("concert_progress", (frac, stage)))
+
+        def worker():
+            try:
+                session = concert.run_ai(source, ffmpeg, steps, start_at, log=log, progress=progress)
+                if preview:
+                    result = concert.render_preview(ffmpeg, session, settings)
+                else:
+                    progress(0.98, "导出")
+                    result = concert.export(ffmpeg, session, settings, output_dir, make_video, log, stems=make_stems)
+                result["session"] = session
+                events.put(("concert_done", result))
+            except Exception as error:
+                events.put(("concert_error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def play_adjusted():
+        """按当前滑块重新混合试听（不重跑 AI，一秒左右），然后播放。"""
+        session = c_session.get("preview")
+        if not session or state.get("concert_busy"):
+            return
+        concert.play_wav(None)
+        if not c_session["dirty"] and c_last.get("preview"):
+            concert.play_wav(c_last["preview"]["preview_processed"])
+            return
+        ffmpeg = core.find_ffmpeg()
+        settings = current_settings()
+        c_status.set("正在按新设置生成试听……")
+        state["concert_busy"] = True
+
+        def worker():
+            try:
+                events.put(("concert_rerendered", concert.render_preview(ffmpeg, session, settings)))
+            except Exception as error:
+                events.put(("concert_error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def reexport():
+        session = c_session.get("full")
+        if not session or state.get("concert_busy"):
+            return
+        ffmpeg = core.find_ffmpeg()
+        settings = current_settings()
+        remember_settings()
+        output_dir = c_output_dir.get().strip() or os.path.dirname(session["source"])
+        make_video = c_video.get()
+        make_stems = c_stems.get()
+        set_concert_busy(True)
+        c_status.set("正在按当前设置重新导出（不用重跑 AI）……")
+        c_write("—" * 60)
+
+        def worker():
+            try:
+                result = concert.export(ffmpeg, session, settings, output_dir, make_video, lambda text: events.put(("concert_log", text)),
+                                        stems=make_stems)
+                result["session"] = session
+                events.put(("concert_done", result))
+            except Exception as error:
+                events.put(("concert_error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    c_play_b.configure(command=play_adjusted)
+    c_reexport_button.configure(command=reexport)
+
+    c_install_button.configure(command=install_concert_clicked)
+    c_preview_button.configure(command=lambda: concert_job(True))
+    c_start_button.configure(command=lambda: concert_job(False))
+
     # ------------------------------------------------------------- 事件与快捷键
     def finish_recording(raw_path):
         config = state["record_config"]
@@ -564,6 +1003,39 @@ def main() -> None:
                     r_start_button.configure(state="normal"); r_status.set(f"完成 · 共 {len(value)} 个文件"); record_last["path"] = value[0]; r_open_button.configure(state="normal"); root.bell()
                 elif kind == "record_process_error":
                     r_start_button.configure(state="normal"); r_status.set("后期处理失败"); messagebox.showerror(APP_TITLE, value)
+                elif kind == "concert_log":
+                    c_write(value)
+                elif kind == "concert_progress":
+                    frac, stage = value
+                    c_progress.configure(value=frac * 100); c_status.set(f"{stage} · {frac * 100:.0f}%")
+                elif kind == "concert_install_done":
+                    set_concert_busy(False); c_progress.stop(); c_progress.configure(mode="determinate", value=0); update_concert_label(); c_status.set("组件安装完成，可以开始了")
+                elif kind == "concert_install_error":
+                    set_concert_busy(False); c_progress.stop(); c_progress.configure(mode="determinate", value=0); update_concert_label(); c_status.set("组件安装失败"); c_write("✖ " + value); messagebox.showerror(APP_TITLE, value)
+                elif kind == "concert_done":
+                    set_concert_busy(False)
+                    session = value.get("session")
+                    if "preview_processed" in value:
+                        c_session.update(preview=session, dirty=False)
+                        c_last["preview"] = value
+                        for button in (c_play_a, c_play_b, c_stop):
+                            button.configure(state="normal")
+                        c_status.set("试听已生成：拖动上面的滑块调整，点“▶ 调整后”马上听到效果（不用重跑 AI）")
+                        concert.play_wav(value["preview_processed"])
+                    else:
+                        c_session.update(full=session)
+                        c_reexport_button.configure(state="normal")
+                        c_last["path"] = value.get("video") or value.get("audio")
+                        c_open_button.configure(state="normal"); c_status.set("完成。想换个音色？调好滑块后点“按当前设置重新导出”，几秒就好"); c_write("✔ " + c_last["path"]); root.bell()
+                    draw_spectrum()
+                elif kind == "concert_rerendered":
+                    state["concert_busy"] = False
+                    c_last["preview"] = value
+                    c_session["dirty"] = False
+                    c_status.set("已按新设置更新试听")
+                    concert.play_wav(value["preview_processed"])
+                elif kind == "concert_error":
+                    set_concert_busy(False); state["concert_busy"] = False; c_progress.configure(value=0); c_status.set("处理失败"); c_write("✖ " + value); messagebox.showerror(APP_TITLE, value)
                 elif kind == "enhance_log":
                     e_write(value)
                 elif kind == "ai_done":
@@ -597,6 +1069,7 @@ def main() -> None:
             return
         cancel_download.set()
         recorder.terminate()
+        concert.play_wav(None)
         hotkeys.stop()
         root.destroy()
 
@@ -605,5 +1078,26 @@ def main() -> None:
     root.mainloop()
 
 
+def run() -> None:
+    """启动程序；pythonw 没有控制台，出错时写日志并弹窗，而不是悄悄退出。"""
+    log_path = Path(__file__).with_name(".tools") / "audio_studio_error.log"
+    try:
+        main()
+    except Exception:
+        import traceback
+        detail = traceback.format_exc()
+        try:
+            log_path.parent.mkdir(exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as handle:
+                handle.write(time.strftime("%Y-%m-%d %H:%M:%S") + "\n" + detail + "\n")
+        except OSError:
+            pass
+        try:
+            import tkinter.messagebox
+            tkinter.messagebox.showerror(APP_TITLE, "Audio Studio 启动失败：\n" + detail[-1500:])
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
-    main()
+    run()
