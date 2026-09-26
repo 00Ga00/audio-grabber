@@ -233,6 +233,49 @@ Audio Studio 启动失败：\n|Audio Studio could not start:\n|Audio Studio konn
 发现新版本。现在下载并更新吗？\n只替换程序文件，AI 组件、模型、设置和你的文件都不动；更新完会自动重启。|A new version is available. Download and update now?\nOnly program files are replaced – AI, models, settings and your files stay; the app restarts afterwards.|Eine neue Version ist verfügbar. Jetzt aktualisieren?\nNur Programmdateien werden ersetzt – KI, Modelle, Einstellungen und deine Dateien bleiben; danach Neustart.
 这个文件夹是 git 仓库：请在 GitHub Desktop 里点 “Fetch origin” → “Pull origin” 更新。|This folder is a git repository: update it in GitHub Desktop with “Fetch origin” → “Pull origin”.|Dieser Ordner ist ein Git-Repository: in GitHub Desktop mit „Fetch origin“ → „Pull origin“ aktualisieren.
 语言 / Language|Language|Sprache
+扒谱|Transcribe|Transkription
+扒谱与声部分析|Transcription & parts analysis|Transkription & Stimmenanalyse
+AI 把录音扒成总谱和分谱（MusicXML / PDF，初稿需校对），并画出每个声部什么时候响、多响|AI turns a recording into a full score and parts (MusicXML / PDF – a draft to proofread) and maps when and how loud each part plays|KI macht aus einer Aufnahme Partitur und Stimmen (MusicXML / PDF – Entwurf zum Korrigieren) und zeigt, wann und wie laut jede Stimme spielt
+音频/视频|Audio/video|Audio/Video
+先去观众声和底噪（现场录音推荐）|Clean crowd & hiss first (live recordings)|Erst Publikum & Rauschen entfernen (Live)
+精度|Accuracy|Genauigkeit
+最准（大模型 + 束搜索，慢）|Best (large + beam search, slow)|Beste (groß + Beam-Suche, langsam)
+较准（大模型）|Good (large model)|Gut (großes Modell)
+快速（中模型）|Fast (medium model)|Schnell (mittleres Modell)
+乐器：自动识别|Instruments: auto|Instrumente: automatisch
+指定乐器…|Instruments…|Instrumente…
+指定乐器（知道编制时选上，识别会更准）|Instruments (choosing them makes recognition more accurate)|Instrumente (Auswahl macht die Erkennung genauer)
+只勾这场演出里真的有的乐器；不勾 = 让 AI 自己判断|Only tick instruments that really play; none ticked = let the AI decide|Nur tatsächlich spielende Instrumente ankreuzen; keins = KI entscheidet
+确定|OK|OK
+① 识别音符|① Recognise notes|① Noten erkennen
+声部音量地图|Parts loudness map|Stimmen-Lautstärkekarte
+识别到的声部（勾选要输出的，右边选记成什么乐器）|Detected parts (tick the ones to export, choose the notated instrument)|Erkannte Stimmen (auswählen und Notationsinstrument festlegen)
+细致节奏（到 32 分音符）|Fine rhythm (down to 32nds)|Feiner Rhythmus (bis 32tel)
+用 MuseScore 导出 PDF|Export PDF with MuseScore|PDF mit MuseScore exportieren
+② 生成总谱和分谱|② Make score & parts|② Partitur & Stimmen erzeugen
+打开文件夹|Open folder|Ordner öffnen
+Hugging Face 授权…|Hugging Face access…|Hugging-Face-Zugang…
+安装扒谱组件|Install transcription|Transkription installieren
+扒谱组件：已安装|Transcription: installed|Transkription: installiert
+扒谱组件：未安装|Transcription: not installed|Transkription: nicht installiert
+授权：已设置|Access: set|Zugang: gesetzt
+授权：未设置|Access: not set|Zugang: fehlt
+MuseScore：已找到|MuseScore: found|MuseScore: gefunden
+MuseScore：未找到（只导出 MusicXML）|MuseScore: not found (MusicXML only)|MuseScore: nicht gefunden (nur MusicXML)
+选一段演奏录音：先“识别音符”，再选要哪些声部、记成什么乐器，生成总谱和分谱|Choose a recording: “Recognise notes”, pick parts and instruments, then make score & parts|Aufnahme wählen: „Noten erkennen“, Stimmen und Instrumente wählen, dann Partitur & Stimmen erzeugen
+正在识别音符……|Recognising notes…|Noten werden erkannt…
+正在生成总谱和分谱……|Making score & parts…|Partitur & Stimmen werden erzeugt…
+正在分离六个声部……|Separating six stems…|Sechs Spuren werden getrennt…
+正在安装扒谱组件……|Installing transcription…|Transkription wird installiert…
+扒谱组件安装完成|Transcription installed|Transkription installiert
+请先点右下角“安装扒谱组件”。|Please click “Install transcription” (bottom right) first.|Bitte zuerst unten rechts „Transkription installieren“ klicken.
+请至少勾选一个声部。|Please tick at least one part.|Bitte mindestens eine Stimme auswählen.
+Hugging Face 授权|Hugging Face access|Hugging-Face-Zugang
+打开网页|Open web page|Webseite öffnen
+令牌一般以 hf_ 开头，请检查一下。|Tokens usually start with hf_ – please check.|Tokens beginnen meist mit hf_ – bitte prüfen.
+声部音量地图已生成：颜色越深越响；最上面一行是每一秒最响的声部|Map ready: darker = louder; the top row shows the loudest part each second|Karte fertig: dunkler = lauter; oben die jeweils lauteste Stimme
+请先在“演唱会降噪”页安装 AI 组件（扒谱和它共用显卡环境）。|Please install the AI on the “Concert cleanup” tab first (shared GPU environment).|Bitte zuerst im Tab „Konzert-Bereinigung“ die KI installieren (gemeinsame GPU-Umgebung).
+最响|loudest|lauteste
 """
 
 # 动态文字里的片段（f-string 拼出来的状态、日志），按从长到短替换
@@ -279,6 +322,28 @@ AI 处理完成|AI finished|KI fertig
 约 |≈ |≈ 
 正在录音 · |Recording · |Aufnahme · 
 完成 · 共 |Done · |Fertig · 
+识别到 |Found |Gefunden: 
+ 个声部| parts| Stimmen
+。勾选要输出的声部，再点“② 生成总谱和分谱”|. Tick the parts to export, then click “② Make score & parts”|. Stimmen auswählen, dann „② Partitur & Stimmen erzeugen“
+拍号 |time |Takt 
+速度约 |tempo ≈ |Tempo ≈ 
+已生成：总谱 + |Done: score + |Fertig: Partitur + 
+ 份分谱| parts| Stimmen
+，保存在 |, saved in |, gespeichert in 
+（调性 | (key | (Tonart 
+ 个音 · | notes · | Noten · 
+失败：|Failed: |Fehlgeschlagen: 
+识别音符 |Recognising notes |Noten erkennen 
+ 段（每段 5 秒）| chunks (5 s each)| Abschnitte (je 5 s)
+找节拍和小节线（Beat This!）|Finding beats and bar lines (Beat This!)|Schläge und Taktstriche (Beat This!)
+加载扒谱模型（第一次会下载，大模型约 1.4 GB）|Loading model (first time downloads ≈1.4 GB)|Modell wird geladen (beim ersten Mal ≈1,4 GB)
+整理声部 |Arranging part |Stimme 
+读入音符并对齐到节拍网格|Reading notes and snapping to the beat grid|Noten einlesen und am Raster ausrichten
+写出总谱|Writing the score|Partitur wird geschrieben
+用 MuseScore 导出 PDF |Exporting PDF with MuseScore |PDF mit MuseScore 
+分离六个声部（人声/鼓/贝斯/吉他/钢琴/其他）|Separating six stems (vocals/drums/bass/guitar/piano/other)|Sechs Spuren trennen (Gesang/Schlagzeug/Bass/Gitarre/Klavier/Rest)
+识别到调性：|Key detected: |Erkannte Tonart: 
+（活动）| (activity)| (Aktivität)
 """
 
 

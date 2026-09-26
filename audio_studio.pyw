@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 import concert
+import transcribe
 from audio_processing import ai_available, enhance_audio, install_ai, postprocess_recording
 from recording import GlobalHotkeys, RecordingController, helper_available, helper_path, install_helper, list_visible_processes
 
@@ -1239,6 +1240,381 @@ def main() -> None:
     c_preview_button.configure(command=lambda: concert_job(True))
     c_start_button.configure(command=lambda: concert_job(False))
 
+    # ------------------------------------------------------------- 扒谱与声部音量地图
+    score_tab = ttk.Frame(notebook, padding=8)
+    notebook.insert(2, score_tab, text="扒谱")
+    s_card = card(score_tab)
+    s_card.columnconfigure(1, weight=1)
+    s_card.rowconfigure(8, weight=1)
+    s_input = tk.StringVar()
+    s_output_dir = tk.StringVar(value=saved["outdir"])
+    s_clean = tk.BooleanVar(value=True)
+    s_fine = tk.BooleanVar(value=False)
+    s_pdf = tk.BooleanVar(value=True)
+    s_size = tk.StringVar(value=list(transcribe.SIZES)[0])
+    s_status = tk.StringVar(value="选一段演奏录音：先“识别音符”，再选要哪些声部、记成什么乐器，生成总谱和分谱")
+    s_state = {"session": None, "rows": [], "instruments": [], "stems": None, "last": None}
+
+    ttk.Label(s_card, text="扒谱与声部分析", style="Card.TLabel", font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
+    ttk.Label(s_card, text="AI 把录音扒成总谱和分谱（MusicXML / PDF，初稿需校对），并画出每个声部什么时候响、多响", style="Muted.Card.TLabel").grid(row=1, column=0, columnspan=3, sticky="w", pady=(1, 6))
+    ttk.Label(s_card, text="音频/视频", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=4)
+    ttk.Entry(s_card, textvariable=s_input).grid(row=2, column=1, sticky="ew", padx=8)
+    ttk.Button(s_card, text="选择…", command=lambda: s_input.set(filedialog.askopenfilename(filetypes=concert.MEDIA_TYPES) or s_input.get())).grid(row=2, column=2)
+    ttk.Label(s_card, text="保存到", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=4)
+    ttk.Entry(s_card, textvariable=s_output_dir).grid(row=3, column=1, sticky="ew", padx=8)
+    ttk.Button(s_card, text="浏览…", command=lambda: choose_directory(s_output_dir)).grid(row=3, column=2)
+
+    s_opts = ttk.Frame(s_card, style="Card.TFrame")
+    s_opts.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 2))
+    ttk.Checkbutton(s_opts, text="先去观众声和底噪（现场录音推荐）", variable=s_clean).pack(side="left")
+    ttk.Label(s_opts, text="精度", style="Card.TLabel").pack(side="left", padx=(14, 4))
+    ttk.Combobox(s_opts, textvariable=s_size, values=list(transcribe.SIZES), state="readonly", width=24).pack(side="left")
+    s_inst_label = ttk.Label(s_opts, text="乐器：自动识别", style="Muted.Card.TLabel")
+    s_inst_label.pack(side="left", padx=(14, 4))
+
+    def choose_instruments():
+        win = tk.Toplevel(root)
+        win.title("指定乐器（知道编制时选上，识别会更准）")
+        win.transient(root)
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="只勾这场演出里真的有的乐器；不勾 = 让 AI 自己判断").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
+        chosen = {}
+        for i, name in enumerate(transcribe.GROUP_NAMES):
+            var = tk.BooleanVar(value=transcribe.GROUP_NAMES[name] in s_state["instruments"])
+            chosen[name] = var
+            ttk.Checkbutton(frame, text=name, variable=var).grid(row=1 + i // 4, column=i % 4, sticky="w", padx=4, pady=1)
+
+        def save():
+            s_state["instruments"] = [transcribe.GROUP_NAMES[n] for n, v in chosen.items() if v.get()]
+            names = [n for n, v in chosen.items() if v.get()]
+            s_inst_label.configure(text="乐器：" + ("、".join(names[:4]) + ("…" if len(names) > 4 else "") if names else "自动识别"))
+            win.destroy()
+
+        ttk.Button(frame, text="确定", style="Primary.TButton", command=save).grid(row=20, column=3, sticky="e", pady=(10, 0))
+
+    ttk.Button(s_opts, text="指定乐器…", command=choose_instruments).pack(side="left")
+
+    s_actions = ttk.Frame(s_card, style="Card.TFrame")
+    s_actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+    s_actions.columnconfigure(0, weight=1)
+    s_detect_button = ttk.Button(s_actions, text="① 识别音符", style="Primary.TButton")
+    s_detect_button.grid(row=0, column=0, sticky="ew")
+    s_map_button = ttk.Button(s_actions, text="声部音量地图")
+    s_map_button.grid(row=0, column=1, padx=(8, 0))
+    s_cancel_button = ttk.Button(s_actions, text="取消", state="disabled", command=lambda: concert.cancel())
+    s_cancel_button.grid(row=0, column=2, padx=(8, 0))
+
+    s_mid = ttk.Frame(s_card, style="Card.TFrame")
+    s_mid.grid(row=8, column=0, columnspan=3, sticky="nsew")
+    s_mid.columnconfigure(1, weight=1)
+    s_mid.rowconfigure(0, weight=1)
+    s_list = ttk.Frame(s_mid, style="Card.TFrame")
+    s_list.grid(row=0, column=0, sticky="nw")
+    ttk.Label(s_list, text="识别到的声部（勾选要输出的，右边选记成什么乐器）", style="Muted.Card.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
+    s_rows_frame = ttk.Frame(s_list, style="Card.TFrame")
+    s_rows_frame.grid(row=1, column=0, columnspan=4, sticky="w")
+    s_bottom = ttk.Frame(s_list, style="Card.TFrame")
+    s_bottom.grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
+    ttk.Checkbutton(s_bottom, text="细致节奏（到 32 分音符）", variable=s_fine).pack(side="left")
+    ttk.Checkbutton(s_bottom, text="用 MuseScore 导出 PDF", variable=s_pdf).pack(side="left", padx=(10, 0))
+    s_export_button = ttk.Button(s_list, text="② 生成总谱和分谱", state="disabled")
+    s_export_button.grid(row=3, column=0, sticky="w", pady=(6, 0))
+    s_open_button = ttk.Button(s_list, text="打开文件夹", state="disabled", command=lambda: open_path(s_state["last"]))
+    s_open_button.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(6, 0))
+    s_map = tk.Canvas(s_mid, height=int(170 * scale), background="#ffffff", highlightthickness=1, highlightbackground="#dde3ea")
+    s_map.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
+
+    s_progress = ttk.Progressbar(s_card, maximum=100)
+    s_progress.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+    ttk.Label(s_card, textvariable=s_status, style="Muted.Card.TLabel").grid(row=10, column=0, columnspan=3, sticky="w", pady=2)
+    s_foot = ttk.Frame(s_card, style="Card.TFrame")
+    s_foot.grid(row=11, column=0, columnspan=3, sticky="ew")
+    s_foot.columnconfigure(0, weight=1)
+    s_ai_label = ttk.Label(s_foot, text="", style="Muted.Card.TLabel")
+    s_ai_label.grid(row=0, column=0, sticky="w")
+    s_token_button = ttk.Button(s_foot, text="Hugging Face 授权…")
+    s_token_button.grid(row=0, column=1, padx=(8, 0))
+    s_install_button = ttk.Button(s_foot, text="安装扒谱组件")
+    s_install_button.grid(row=0, column=2, padx=(8, 0))
+
+    def update_score_label():
+        parts = []
+        parts.append("扒谱组件：已安装" if transcribe.available() else "扒谱组件：未安装")
+        parts.append("授权：已设置" if transcribe.get_token() else "授权：未设置")
+        parts.append("MuseScore：已找到" if transcribe.find_musescore() else "MuseScore：未找到（只导出 MusicXML）")
+        s_ai_label.configure(text=" · ".join(parts))
+
+    update_score_label()
+
+    def draw_map(_event=None):
+        """声部音量地图：每行一个声部，横轴是时间，颜色越深越响；最上面一行标出每一秒最响的声部。"""
+        cv = s_map
+        cv.delete("all")
+        w, h = max(cv.winfo_width(), 240), max(cv.winfo_height(), 120)
+        rows = []
+        if s_state["stems"]:
+            rows += [(r["name"], r["levels"], "db") for r in s_state["stems"]["rows"]]
+        if s_state["session"]:
+            rows += [(t["name_zh"] + "（活动）", t["activity"], "act") for t in s_state["session"]["summary"]["tracks"]]
+        if not rows:
+            cv.create_text(w / 2, h / 2, text="声部音量地图：点“声部音量地图”（六轨分离，看各声部多响）\n或先“识别音符”（看每件乐器什么时候在演奏）",
+                           fill="#8a94a3", font=("Microsoft YaHei UI", 9), justify="center")
+            return
+        left, top, right = 86, 16, 6
+        length = max(len(r[1]) for r in rows)
+        row_h = max(8, (h - top - 16) / len(rows))
+        col_w = (w - left - right) / max(length, 1)
+        db_values = [v for _, levels, kind in rows if kind == "db" for v in levels if v > -90]
+        db_max = max(db_values) if db_values else 0
+        colors = ["#f4f6f9", "#d7e6f7", "#a9cbf0", "#6fa8e6", "#3b82d6", "#1f5fb3", "#123f80"]
+        for r, (name, levels, kind) in enumerate(rows):
+            y = top + r * row_h
+            cv.create_text(left - 4, y + row_h / 2, text=name[:10], anchor="e", fill="#4a5563", font=("Microsoft YaHei UI", 8))
+            peak = max(levels) if kind == "act" and levels else 1
+            step = max(1, int(1 / col_w)) if col_w < 1 else 1
+            for i in range(0, len(levels), step):
+                value = levels[i]
+                level = (value - (db_max - 36)) / 36 if kind == "db" else value / max(peak, 1e-6)
+                level = max(0.0, min(1.0, level))
+                if level < 0.05:
+                    continue
+                color = colors[min(len(colors) - 1, int(level * (len(colors) - 1) + 0.5))] if kind == "db" else \
+                    ("#fbe3c5", "#f6c28b", "#ee9a45", "#d9731a")[min(3, int(level * 3.99))]
+                x = left + i * col_w
+                cv.create_rectangle(x, y + 1, x + max(col_w * step, 1), y + row_h - 1, fill=color, width=0)
+        # 顶部：每一秒最响的声部（只看六轨响度）
+        stem_rows = [(name, levels) for name, levels, kind in rows if kind == "db"]
+        if stem_rows:
+            palette = ["#e05a47", "#2f6fdf", "#2eaa6a", "#9b59b6", "#e8871e", "#6b7686"]
+            for i in range(length):
+                best = max(range(len(stem_rows)), key=lambda k: stem_rows[k][1][i] if i < len(stem_rows[k][1]) else -999)
+                x = left + i * col_w
+                cv.create_rectangle(x, 2, x + max(col_w, 1), top - 4, fill=palette[best % len(palette)], width=0)
+            cv.create_text(left - 4, top / 2, text="最响", anchor="e", fill="#4a5563", font=("Microsoft YaHei UI", 8))
+        minutes = length / 60
+        for m in range(0, int(minutes) + 1, max(1, int(minutes // 6) or 1)):
+            x = left + m * 60 * col_w
+            cv.create_line(x, top, x, h - 12, fill="#e6eaf0")
+            cv.create_text(x, h - 6, text=f"{m}:00", fill="#8a94a3", font=("Microsoft YaHei UI", 7))
+
+    s_map.bind("<Configure>", draw_map)
+
+    def fill_rows(summary):
+        for child in s_rows_frame.winfo_children():
+            child.destroy()
+        s_state["rows"] = []
+        names = [n for n, _ in transcribe.TARGETS]
+        for i, track in enumerate(summary["tracks"][:14]):
+            include = tk.BooleanVar(value=track["group"] != "drums" and track["notes"] >= 8)
+            default = next((n for n, m in transcribe.TARGETS if m == _group_target(track["group"])), "钢琴")
+            target = tk.StringVar(value=default)
+            ttk.Checkbutton(s_rows_frame, variable=include).grid(row=i, column=0)
+            ttk.Label(s_rows_frame, text=track["name_zh"], style="Card.TLabel", width=12).grid(row=i, column=1, sticky="w")
+            ttk.Label(s_rows_frame, text=f"{track['notes']} 个音 · {_note_name(track['low'])}–{_note_name(track['high'])}",
+                      style="Muted.Card.TLabel", width=18).grid(row=i, column=2, sticky="w")
+            ttk.Combobox(s_rows_frame, textvariable=target, values=names, state="readonly", width=16).grid(row=i, column=3, padx=(4, 0))
+            s_state["rows"].append((track, include, target))
+        s_export_button.configure(state="normal" if s_state["rows"] else "disabled")
+
+    def _group_target(group):
+        return transcribe.GROUP_TARGET.get(group, "Piano")
+
+    def _note_name(midi):
+        names = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
+        return f"{names[midi % 12]}{midi // 12 - 1}"
+
+    def set_score_busy(busy):
+        state["score_busy"] = busy
+        for button in (s_detect_button, s_map_button, s_install_button, s_token_button):
+            button.configure(state="disabled" if busy else "normal")
+        s_export_button.configure(state="disabled" if busy or not s_state["rows"] else "normal")
+        s_cancel_button.configure(state="normal" if busy else "disabled")
+
+    def score_progress(frac, stage=""):
+        events.put(("score_progress", (frac, stage)))
+
+    def score_log(text):
+        events.put(("score_log", text))
+
+    def start_detect():
+        if state.get("score_busy"):
+            return
+        source = s_input.get().strip()
+        if not os.path.isfile(source):
+            messagebox.showwarning(APP_TITLE, "请先选择一个视频或音频文件。")
+            return
+        if not transcribe.available():
+            messagebox.showinfo(APP_TITLE, "请先点右下角“安装扒谱组件”。")
+            return
+        if not transcribe.get_token():
+            open_token_dialog()
+            return
+        ffmpeg = core.find_ffmpeg()
+        set_score_busy(True)
+        s_status.set("正在识别音符……")
+
+        def worker():
+            try:
+                events.put(("score_detected", transcribe.run_transcription(
+                    source, ffmpeg, s_size.get(), list(s_state["instruments"]), s_clean.get(), score_log, score_progress)))
+            except concert.Cancelled:
+                events.put(("score_error", "已取消"))
+            except Exception as error:
+                events.put(("score_error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_export():
+        session = s_state["session"]
+        if not session or state.get("score_busy"):
+            return
+        parts = []
+        used = set()
+        for track, include, target in s_state["rows"]:
+            if not include.get():
+                continue
+            name = target.get()
+            music21_name = dict(transcribe.TARGETS).get(name, "Piano")
+            label = name.split("（")[0]
+            count = sum(1 for p in parts if p["label"].startswith(label))
+            label = f"{label} {count + 1}" if count or label in used else label
+            used.add(label)
+            parts.append({"track": track["track"], "group": track["group"], "instrument": music21_name, "label": label,
+                          "grand": music21_name in ("Piano", "Harp", "Organ", "Electric Piano")})
+        if not parts:
+            messagebox.showwarning(APP_TITLE, "请至少勾选一个声部。")
+            return
+        set_score_busy(True)
+        s_status.set("正在生成总谱和分谱……")
+        output_dir = s_output_dir.get().strip() or os.path.dirname(session["source"])
+
+        def worker():
+            try:
+                events.put(("score_exported", transcribe.export_score(session, parts, output_dir, s_fine.get(), s_pdf.get(),
+                                                                      score_log, score_progress)))
+            except Exception as error:
+                events.put(("score_error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_map():
+        if state.get("score_busy"):
+            return
+        source = s_input.get().strip()
+        if not os.path.isfile(source):
+            messagebox.showwarning(APP_TITLE, "请先选择一个视频或音频文件。")
+            return
+        if not concert.ai_available():
+            messagebox.showinfo(APP_TITLE, "需要先安装演唱会降噪组件。")
+            return
+        ffmpeg = core.find_ffmpeg()
+        set_score_busy(True)
+        s_status.set("正在分离六个声部……")
+        audio = (s_state["session"] or {}).get("audio") if (s_state["session"] or {}).get("source") == source else None
+
+        def worker():
+            try:
+                events.put(("score_stems", transcribe.run_stems(source, ffmpeg, s_clean.get(), score_log, score_progress, audio)))
+            except concert.Cancelled:
+                events.put(("score_error", "已取消"))
+            except Exception as error:
+                events.put(("score_error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_token_dialog():
+        win = tk.Toplevel(root)
+        win.title("Hugging Face 授权")
+        win.transient(root)
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        steps = ("扒谱模型 MuScriptor 需要你同意它的许可（免费，个人非商业用途），只需要做一次：\n"
+                 "1. 注册并登录 huggingface.co\n"
+                 "2. 打开 huggingface.co/MuScriptor/muscriptor-large ，点同意许可（Agree）\n"
+                 "3. 打开 huggingface.co/settings/tokens ，新建一个 Read 类型的令牌，复制\n"
+                 "4. 粘贴到下面（只保存在你这台电脑的程序文件夹里）")
+        ttk.Label(frame, text=steps, justify="left").grid(row=0, column=0, columnspan=3, sticky="w")
+        token_var = tk.StringVar(value=transcribe.get_token())
+        ttk.Entry(frame, textvariable=token_var, width=52, show="•").grid(row=1, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Button(frame, text="打开网页", command=lambda: __import__("webbrowser").open("https://huggingface.co/MuScriptor/muscriptor-large")).grid(row=1, column=2, padx=(6, 0))
+
+        def save():
+            value = token_var.get().strip()
+            if not value.startswith("hf_"):
+                messagebox.showwarning(APP_TITLE, "令牌一般以 hf_ 开头，请检查一下。", parent=win)
+                return
+            transcribe.set_token(value)
+            update_score_label()
+            win.destroy()
+
+        ttk.Button(frame, text="保存", style="Primary.TButton", command=save).grid(row=2, column=2, sticky="e")
+
+    def install_score():
+        if state.get("score_busy"):
+            return
+        if not concert.ai_available():
+            messagebox.showinfo(APP_TITLE, "请先在“演唱会降噪”页安装 AI 组件（扒谱和它共用显卡环境）。")
+            return
+        set_score_busy(True)
+        s_status.set("正在安装扒谱组件……")
+
+        def worker():
+            try:
+                transcribe.install(score_log)
+                events.put(("score_installed", None))
+            except Exception as error:
+                events.put(("score_error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    s_detect_button.configure(command=start_detect)
+    s_export_button.configure(command=start_export)
+    s_map_button.configure(command=start_map)
+    s_token_button.configure(command=open_token_dialog)
+    s_install_button.configure(command=install_score)
+
+    def handle_score_event(kind, value):
+        if kind == "score_progress":
+            frac, stage = value
+            s_progress.configure(value=frac * 100)
+            s_status.set(f"{stage} · {frac * 100:.0f}%")
+        elif kind == "score_log":
+            if value:
+                s_status.set(value)
+        elif kind == "score_detected":
+            set_score_busy(False)
+            s_state["session"] = value
+            fill_rows(value["summary"])
+            set_score_busy(False)
+            meta = value["summary"]
+            extra = " · ".join(x for x in (f"拍号 {meta['time_signatures'][0]}" if meta.get("time_signatures") else "",
+                                           f"速度约 {meta['tempo']}" if meta.get("tempo") else "") if x)
+            s_status.set(f"识别到 {len(meta['tracks'])} 个声部" + (f"（{extra}）" if extra else "") + "。勾选要输出的声部，再点“② 生成总谱和分谱”")
+            draw_map()
+            root.bell()
+        elif kind == "score_exported":
+            set_score_busy(False)
+            s_state["last"] = value.get("score") or value.get("folder")
+            s_open_button.configure(state="normal")
+            s_status.set(f"已生成：总谱 + {len(value.get('parts', []))} 份分谱" + (f"（调性 {value['key']}）" if value.get("key") else "") + "，保存在 " + value["folder"])
+            root.bell()
+        elif kind == "score_stems":
+            set_score_busy(False)
+            s_state["stems"] = value
+            s_status.set("声部音量地图已生成：颜色越深越响；最上面一行是每一秒最响的声部")
+            draw_map()
+        elif kind == "score_installed":
+            set_score_busy(False)
+            update_score_label()
+            s_status.set("扒谱组件安装完成")
+        elif kind == "score_error":
+            set_score_busy(False)
+            s_progress.configure(value=0)
+            s_status.set("失败：" + value.splitlines()[0][:120] if value != "已取消" else "已取消")
+            if value != "已取消":
+                messagebox.showerror(APP_TITLE, value)
+
     # ------------------------------------------------------------- 事件与快捷键
     def finish_recording(raw_path):
         config = state["record_config"]
@@ -1349,6 +1725,8 @@ def main() -> None:
                     c_status.set("已按新设置更新试听")
                     concert.PLAYER.load(original=value["preview_original"], processed=value["preview_processed"])
                     concert.PLAYER.play("processed", state.get("resume_at", 0))
+                elif kind.startswith("score_"):
+                    handle_score_event(kind, value)
                 elif kind == "update_status":
                     info, silent = value
                     update_state["info"] = info

@@ -182,10 +182,29 @@ def install_ai(log=lambda _message: None) -> None:
 
 # ----------------------------------------------------------------- worker
 
+_REACH: dict[str, bool] = {}
+
+
+def _reachable(host: str) -> bool:
+    if host not in _REACH:
+        import socket
+        try:
+            socket.create_connection((host, 443), timeout=5).close()
+            _REACH[host] = True
+        except OSError:
+            _REACH[host] = False
+    return _REACH[host]
+
+
 def _worker_env() -> dict:
     """AI 进程的环境变量：audio-separator 要求 PATH 里能找到名叫 ffmpeg 的程序。
     程序自带的 ffmpeg（imageio-ffmpeg）文件名不是 ffmpeg.exe，所以复制一份到 .tools/ffmpeg-bin。"""
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    token_file = HERE / ".tools" / "hf_token.txt"
+    if token_file.is_file():
+        env["HF_TOKEN"] = token_file.read_text(encoding="utf-8").strip()
+    if "HF_ENDPOINT" not in env and not _reachable("huggingface.co"):
+        env["HF_ENDPOINT"] = "https://hf-mirror.com"   # Hugging Face 连不上时，扒谱模型等改从镜像下载
     if shutil.which("ffmpeg"):
         return env
     try:
@@ -280,12 +299,12 @@ def cancel() -> None:
             pass
 
 
-def run_worker(args: list[str], on_event, on_log=None) -> dict:
+def run_worker(args: list[str], on_event, on_log=None, script: Path | None = None) -> dict:
     """运行 AI 进程，把 JSON 事件交给 on_event；返回 done 事件，失败时抛出异常。"""
     if _RUNNING["cancelled"]:
         raise Cancelled()
     process = subprocess.Popen(
-        [str(ai_python()), "-u", str(WORKER)] + args,
+        [str(ai_python()), "-u", str(script or WORKER)] + args,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         encoding="utf-8", errors="replace", creationflags=NO_WINDOW, cwd=str(HERE), env=_worker_env(),
     )
