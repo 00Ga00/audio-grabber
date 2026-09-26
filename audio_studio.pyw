@@ -1163,16 +1163,20 @@ def main() -> None:
     # ---- 电脑配置：按显卡/显存/内存锁住太慢的选项、估计处理时间
     hw = {"info": hardware.detect(use_cache=True) if hardware.CACHE.is_file() else {"tier": "strong", "pending": True}}
 
+    def scale_key(keys):
+        """演唱会降噪和扒谱分开校正（速度差别很大）。"""
+        return "hw_scale_score" if any(k.startswith("score") for k in keys) else "hw_scale"
+
     def estimate_text(keys, seconds):
         if seconds <= 0 or hw["info"].get("pending"):
             return ""
-        return hardware.fmt_minutes(hardware.estimate(hw["info"], keys, seconds) * float(prefs.get("hw_scale", 1.0)))
+        return hardware.fmt_minutes(hardware.estimate(hw["info"], keys, seconds) * float(prefs.get(scale_key(keys), 1.0)))
 
     def confirm_estimate(keys, seconds):
         """很久的任务先问一下；返回 False 表示用户不做了。"""
         if seconds <= 0 or hw["info"].get("pending"):
             return True
-        est = hardware.estimate(hw["info"], keys, seconds) * float(prefs.get("hw_scale", 1.0))
+        est = hardware.estimate(hw["info"], keys, seconds) * float(prefs.get(scale_key(keys), 1.0))
         if est < 20 * 60:
             return True
         return messagebox.askyesno(APP_TITLE, f"按你的电脑配置，预计需要{hardware.fmt_minutes(est)}。\n"
@@ -1184,7 +1188,7 @@ def main() -> None:
         if seconds < 60 or hw["info"].get("pending"):
             return
         ratio = elapsed / max(hardware.estimate(hw["info"], keys, seconds), 1)
-        prefs["hw_scale"] = round(min(max(0.5 * float(prefs.get("hw_scale", 1.0)) + 0.5 * ratio, 0.2), 5.0), 3)
+        prefs[scale_key(keys)] = round(min(max(0.5 * float(prefs.get(scale_key(keys), 1.0)) + 0.5 * ratio, 0.2), 5.0), 3)
         try:
             concert.save_presets(presets)
         except Exception:
@@ -1422,6 +1426,18 @@ def main() -> None:
 
     s_opts = ttk.Frame(s_card, style="Card.TFrame")
     s_opts.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 2))
+    # 只扒一段：整场演唱会很长，只扒想要的那首歌会快很多
+    s_clip, s_from, s_to = tk.BooleanVar(value=False), tk.StringVar(), tk.StringVar()
+    s_range = ttk.Frame(s_card, style="Card.TFrame")
+    s_range.grid(row=5, column=0, columnspan=3, sticky="w", pady=(2, 0))
+    ttk.Checkbutton(s_range, text="只扒一段", variable=s_clip).pack(side="left")
+    ttk.Label(s_range, text="从", style="Card.TLabel").pack(side="left", padx=(10, 4))
+    ttk.Entry(s_range, textvariable=s_from, width=9).pack(side="left")
+    ttk.Label(s_range, text="到", style="Card.TLabel").pack(side="left", padx=(8, 4))
+    ttk.Entry(s_range, textvariable=s_to, width=9).pack(side="left")
+    ttk.Label(s_range, text="例：1:30；整场演出只扒想要的那首会快很多", style="Muted.Card.TLabel").pack(side="left", padx=(10, 0))
+    for var in (s_from, s_to):
+        var.trace_add("write", lambda *_: s_clip.set(bool(s_from.get().strip() or s_to.get().strip())))
     ttk.Checkbutton(s_opts, text="先去观众声和底噪（现场录音推荐）", variable=s_clean).pack(side="left")
     ttk.Label(s_opts, text="精度", style="Card.TLabel").pack(side="left", padx=(14, 4))
     s_size_box = ttk.Combobox(s_opts, textvariable=s_size, values=list(transcribe.SIZES), state="readonly", width=24)
@@ -1453,7 +1469,7 @@ def main() -> None:
     ttk.Button(s_opts, text="指定乐器…", command=choose_instruments).pack(side="left")
 
     s_actions = ttk.Frame(s_card, style="Card.TFrame")
-    s_actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(6, 4))
+    s_actions.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(6, 4))
     s_actions.columnconfigure(0, weight=1)
     s_detect_button = ttk.Button(s_actions, text="① 识别音符", style="Primary.TButton")
     s_detect_button.grid(row=0, column=0, sticky="ew")
@@ -1608,12 +1624,30 @@ def main() -> None:
             open_token_dialog()
             return
         ffmpeg = core.find_ffmpeg()
-        size, beam = transcribe.SIZES.get(s_size.get(), ("medium", 1))
-        keys = (["crowd", "denoise"] if s_clean.get() else []) + ["score_beam" if beam > 1 else "score_" + size]
+        size, beam, parallel = transcribe.SIZES.get(s_size.get(), ("large", 1, 1))
+        keys = (["crowd", "denoise"] if s_clean.get() else []) + [
+            "score_beam" if beam > 1 else "score_parallel" if parallel > 1 else "score_" + size]
         try:
             seconds = concert.probe(ffmpeg, source).get("duration", 0.0)
         except Exception:
             seconds = 0.0
+        clip_start = clip_length = None
+        if s_clip.get():
+            try:
+                a, b = core.parse_time(s_from.get()), core.parse_time(s_to.get())
+            except ValueError as error:
+                messagebox.showwarning(APP_TITLE, str(error))
+                return
+            a = a or 0.0
+            b = b if b is not None else (seconds or None)
+            if b is not None and b <= a:
+                messagebox.showwarning(APP_TITLE, "结束时间必须晚于开始时间。")
+                return
+            clip_start, clip_length = a, (b - a) if b is not None else None
+            if clip_length is None:
+                messagebox.showwarning(APP_TITLE, "请填写结束时间。")
+                return
+            seconds = clip_length
         if not confirm_estimate(keys, seconds):
             return
         set_score_busy(True)
@@ -1621,8 +1655,12 @@ def main() -> None:
 
         def worker():
             try:
-                events.put(("score_detected", transcribe.run_transcription(
-                    source, ffmpeg, s_size.get(), list(s_state["instruments"]), s_clean.get(), score_log, score_progress)))
+                began = time.time()
+                result = transcribe.run_transcription(
+                    source, ffmpeg, s_size.get(), list(s_state["instruments"]), s_clean.get(), score_log, score_progress,
+                    clip_start, clip_length)
+                learn_speed(keys, seconds, time.time() - began)
+                events.put(("score_detected", result))
             except concert.Cancelled:
                 events.put(("score_error", "已取消"))
             except Exception as error:

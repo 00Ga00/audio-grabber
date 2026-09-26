@@ -47,7 +47,7 @@ GROUPS = {
 
 # ------------------------------------------------------------------ 扒谱
 
-def transcribe(path: str, out: str, size: str, beam: int, instruments: list[str]) -> None:
+def transcribe(path: str, out: str, size: str, beam: int, instruments: list[str], parallel: int = 1) -> None:
     import torch
     from muscriptor.events import ProgressEvent
     from muscriptor.transcription_model import TranscriptionModel
@@ -61,18 +61,34 @@ def transcribe(path: str, out: str, size: str, beam: int, instruments: list[str]
     emit("progress", stage="加载扒谱模型（第一次会下载，大模型约 1.4 GB）", fraction=0.01)
     import concert_worker as cw
     cw.hook_byte_downloads(f"MuScriptor 扒谱模型（{size}）")
-    model = TranscriptionModel.load_model(weights_path=size, device="cuda" if gpu else "cpu")
+    # 显卡上直接用半精度权重：逐个音符生成时主要卡在显存带宽，权重减半 ≈ 快 1.5–2 倍（MuScriptor 在 Mac 上默认就这样）
+    model = TranscriptionModel.load_model(weights_path=size, device="cuda" if gpu else "cpu",
+                                          dtype=torch.float16 if gpu else None)
     emit("progress", stage="找节拍和小节线（Beat This!）", fraction=0.04)
     cw.DOWNLOAD_NAME["name"] = "Beat This! 节拍模型"
     grid = model.detect_beat_grid_for(path, "best-effort")
     if grid is None:
         emit("notice", message="没找到稳定的节拍，按自由节奏记谱（小节线可能不准）。")
 
+    import time
+    began = {"t": None}
+    options = dict(instruments=instruments or None, beam_size=max(1, beam))
+    if parallel > 1 and beam <= 1:
+        # 并行：几段一起算（段与段接缝处的连音偶尔不准，换来数倍速度）
+        options.update(batch_size=parallel, prelude_forcing=False)
+
     def events():
-        for event in model.transcribe(path, instruments=instruments or None, beam_size=max(1, beam)):
+        for event in model.transcribe(path, **options):
             if isinstance(event, ProgressEvent):
                 if event.total:
-                    emit("progress", stage=f"识别音符 {event.completed}/{event.total} 段（每段 5 秒）",
+                    now = time.time()
+                    if began["t"] is None:
+                        began["t"] = now
+                    eta = ""
+                    if event.completed >= 2:
+                        left = (now - began["t"]) / event.completed * (event.total - event.completed)
+                        eta = f" · 还要约 {left / 60:.0f} 分钟" if left >= 90 else f" · 还要约 {left:.0f} 秒"
+                    emit("progress", stage=f"识别音符 {event.completed}/{event.total} 段（每段 5 秒）{eta}",
                          fraction=0.05 + 0.9 * event.completed / event.total)
                 continue
             yield event
@@ -399,6 +415,7 @@ def main() -> int:
     parser.add_argument("--models")
     parser.add_argument("--size", default="large")
     parser.add_argument("--beam", type=int, default=4)
+    parser.add_argument("--parallel", type=int, default=1)
     parser.add_argument("--instruments", default="")
     args = parser.parse_args()
     try:
@@ -407,7 +424,7 @@ def main() -> int:
         pass
     try:
         if args.transcribe:
-            transcribe(args.transcribe, args.out, args.size, args.beam, [i for i in args.instruments.split(",") if i])
+            transcribe(args.transcribe, args.out, args.size, args.beam, [i for i in args.instruments.split(",") if i], args.parallel)
         elif args.notate:
             notate(args.notate, args.plan, args.out)
         elif args.stems:

@@ -241,6 +241,10 @@ AI 把录音扒成总谱和分谱（MusicXML / PDF，初稿需校对），并画
 精度|Accuracy|Genauigkeit
 最准（大模型 + 束搜索，慢）|Best (large + beam search, slow)|Beste (groß + Beam-Suche, langsam)
 较准（大模型）|Good (large model)|Gut (großes Modell)
+较快（大模型，多段并行）|Faster (large model, parallel chunks)|Schneller (großes Modell, parallel)
+只扒一段|Only a section|Nur ein Abschnitt
+例：1:30；整场演出只扒想要的那首会快很多|e.g. 1:30 – transcribing just the song you want is much faster|z. B. 1:30 – nur das gewünschte Stück geht viel schneller
+请填写结束时间。|Please enter an end time.|Bitte eine Endzeit eingeben.
 快速（中模型）|Fast (medium model)|Schnell (mittleres Modell)
 乐器：自动识别|Instruments: auto|Instrumente: automatisch
 指定乐器…|Instruments…|Instrumente…
@@ -381,6 +385,7 @@ AI 处理完成|AI finished|KI fertig
 识别到调性：|Key detected: |Erkannte Tonart: 
 （活动）| (activity)| (Aktivität)
 版本 |Version |Version
+ · 还要约 | · about | · noch ca. 
 去观众声 + 去底噪；适合没有 NVIDIA 显卡的电脑|crowd + noise removal; for PCs without an NVIDIA GPU|Publikum + Rauschen entfernen; für PCs ohne NVIDIA-GPU
 再加人声/伴奏分离、音质修复；适合 4–8 GB 显存|adds vocal/backing split and restoration; for 4–8 GB VRAM|plus Gesang/Begleitung-Trennung und Restaurierung; für 4–8 GB VRAM
 再加去混响（现场感）；适合 8 GB 以上显存|adds de-reverb (room control); for 8 GB+ VRAM|plus Enthallung (Raumregler); ab 8 GB VRAM

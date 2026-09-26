@@ -17,7 +17,9 @@ WORKER = HERE / "transcribe_worker.py"
 TOKEN_FILE = HERE / ".tools" / "hf_token.txt"
 READY_FLAG = concert.AI_ENV / "transcribe_ready"
 NO_WINDOW = concert.NO_WINDOW
-SIZES = {"最准（大模型 + 束搜索，慢）": ("large", 4), "较准（大模型）": ("large", 1), "快速（中模型）": ("medium", 1)}
+# 显示名 → (模型, 束宽, 并行段数)；从准到快排列
+SIZES = {"最准（大模型 + 束搜索，慢）": ("large", 4, 1), "较准（大模型）": ("large", 1, 1),
+         "较快（大模型，多段并行）": ("large", 1, 8), "快速（中模型）": ("medium", 1, 1)}
 MUSESCORE_CANDIDATES = [
     r"C:\Program Files\MuseScore 4\bin\MuseScore4.exe",
     r"C:\Program Files\MuseScore 3\bin\MuseScore3.exe",
@@ -108,30 +110,33 @@ def _session(kind: str) -> Path:
     return folder
 
 
-def prepare_audio(source: str, ffmpeg: str, clean: bool, folder: Path, log, progress) -> str:
-    """扒谱前的音频：44.1 kHz 立体声；可选先用演唱会降噪去掉观众声和底噪（识别会更准）。"""
+def prepare_audio(source: str, ffmpeg: str, clean: bool, folder: Path, log, progress,
+                  start: float | None = None, length: float | None = None) -> str:
+    """扒谱前的音频：44.1 kHz 立体声；可选先用演唱会降噪去掉观众声和底噪（识别会更准）；可以只取一段。"""
     target = str(folder / "input.wav")
     if clean:
-        session = concert.run_ai(source, ffmpeg, ["crowd", "denoise"], log=log,
+        session = concert.run_ai(source, ffmpeg, ["crowd", "denoise"], preview_start=start,
+                                 preview_length=length or 30.0, log=log, kind_name="score",
                                  progress=lambda f, s="": progress(0.35 * f, s))
         concert.render(ffmpeg, session, dict(concert.DEFAULT_SETTINGS, strength=1.0, auto=0.0, air=0.0, loudness="off"),
                        target, ["-c:a", "pcm_f32le"])
     else:
         info = concert.probe(ffmpeg, source)
-        concert.extract(ffmpeg, source, target, 1.0, mono=info.get("mono", False))
+        concert.extract(ffmpeg, source, target, 1.0, start, length, mono=info.get("mono", False))
     return target
 
 
 def run_transcription(source: str, ffmpeg: str, size_label: str, instruments: list[str], clean: bool,
-                      log=lambda _m: None, progress=lambda _f, _s="": None) -> dict:
+                      log=lambda _m: None, progress=lambda _f, _s="": None,
+                      start: float | None = None, length: float | None = None) -> dict:
     if not available():
         raise RuntimeError("还没有安装扒谱组件。")
     if not get_token():
         raise RuntimeError("还没有设置 Hugging Face 授权（扒谱模型需要）。请先点“Hugging Face 授权…”。")
     concert._RUNNING["cancelled"] = False
     folder = _session("score")
-    audio = prepare_audio(source, ffmpeg, clean, folder, log, progress)
-    size, beam = SIZES.get(size_label, ("large", 4))
+    audio = prepare_audio(source, ffmpeg, clean, folder, log, progress, start, length)
+    size, beam, parallel = SIZES.get(size_label, ("large", 1, 1))
     base = 0.35 if clean else 0.02
     found = {}
 
@@ -148,7 +153,7 @@ def run_transcription(source: str, ffmpeg: str, size_label: str, instruments: li
         elif kind == "summary":
             found.update(event)
 
-    concert.run_worker(["--transcribe", audio, "--out", str(folder), "--size", size, "--beam", str(beam),
+    concert.run_worker(["--transcribe", audio, "--out", str(folder), "--size", size, "--beam", str(beam), "--parallel", str(parallel),
                         "--instruments", ",".join(instruments)], on_event, script=WORKER)
     if not found.get("tracks"):
         raise RuntimeError("没有识别到任何音符。")

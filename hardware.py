@@ -27,11 +27,11 @@ TIER_NAMES = {"strong": "高配（显卡加速，全部可用）", "medium": "�
 # 每一步大约要“音频时长的几倍”（RTF）；按档位粗估，实际跑过之后用实测值校正
 RTF = {
     "strong": {"crowd": 0.04, "denoise": 0.04, "restore": 0.06, "split": 0.04, "dereverb": 0.04, "stems": 0.08,
-               "score_medium": 0.10, "score_large": 0.20, "score_beam": 0.60},
+               "score_medium": 0.10, "score_large": 0.20, "score_beam": 0.60, "score_parallel": 0.06},
     "medium": {"crowd": 0.10, "denoise": 0.10, "restore": 0.15, "split": 0.10, "dereverb": 0.10, "stems": 0.20,
-               "score_medium": 0.25, "score_large": 0.50, "score_beam": 1.50},
+               "score_medium": 0.25, "score_large": 0.50, "score_beam": 1.50, "score_parallel": 0.15},
     "weak": {"crowd": 1.2, "denoise": 1.2, "restore": 4.0, "split": 1.2, "dereverb": 1.2, "stems": 2.5,
-             "score_medium": 2.0, "score_large": 5.0, "score_beam": 15.0},
+             "score_medium": 2.0, "score_large": 5.0, "score_beam": 15.0, "score_parallel": 2.0},
 }
 
 

@@ -757,7 +757,7 @@ def session_root() -> Path:
 
 def run_ai(source: str, ffmpeg: str, steps: list[str], preview_start: float | None = None,
            preview_length: float = 30.0, log=lambda _m: None, progress=lambda _f, _s="": None,
-           fast: bool = True, low_vram: bool = False) -> dict:
+           fast: bool = True, low_vram: bool = False, kind_name: str | None = None) -> dict:
     """运行 AI 部分（慢），返回一个 session；之后可以用 render() 按不同设置反复导出（快）。"""
     import json
     import shutil as _shutil
@@ -770,7 +770,7 @@ def run_ai(source: str, ffmpeg: str, steps: list[str], preview_start: float | No
     preview = preview_start is not None
     if preview:
         preview_start = max(0.0, min(preview_start, max(0.0, info["duration"] - 1)))
-    kind = "preview" if preview else "full"
+    kind = kind_name or ("preview" if preview else "full")
     root = session_root()
     root.mkdir(parents=True, exist_ok=True)
     for old in root.glob(kind + "_*"):   # 同类的旧结果删掉，避免占满硬盘
