@@ -202,6 +202,66 @@ def _worker_env() -> dict:
     return env
 
 
+def analyze_reference(ffmpeg: str, path: str) -> dict:
+    """参考曲（录音室版等）→ 频谱，用来做音色匹配。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = os.path.join(tmp, "reference.wav")
+        _ffmpeg(ffmpeg, ["-i", path, "-vn", "-ac", "2", "-ar", str(WORK_RATE), "-t", "900", "-c:a", "pcm_f32le", "-y", wav], "读取参考曲")
+        found = {}
+        run_worker(["--models", str(MODELS_DIR), "--reference", wav],
+                   lambda event: found.update(levels=event["levels"]) if event.get("type") == "reference" else None)
+    if not found.get("levels"):
+        raise RuntimeError("参考曲分析失败。")
+    return {"name": Path(path).name, "levels": found["levels"]}
+
+
+def _write_ir(path: Path, seconds: float, predelay: float, rt60: float, seed: int) -> None:
+    """合成一个立体声“音乐厅”冲激响应（左右去相关的指数衰减噪声，高频衰减更快）。纯 Python，不需要 numpy。"""
+    import random
+    import struct
+    import wave
+    rnd = random.Random(seed)
+    rate = WORK_RATE
+    n = int(rate * seconds)
+    start = int(rate * predelay)
+    decay = 6.91 / (rt60 * rate)                 # 60 dB 衰减所需时间 = rt60
+    frames = bytearray()
+    low = [0.0, 0.0]
+    peak = 0.0
+    samples = []
+    for i in range(n):
+        env = 0.0 if i < start else pow(2.718281828, -decay * (i - start))
+        pair = []
+        for ch in range(2):
+            alpha = 0.35 + 0.5 * min(1.0, (i - start) / (rate * rt60)) if i >= start else 0.35
+            low[ch] = low[ch] + (rnd.uniform(-1, 1) - low[ch]) * (1 - alpha)   # 越往后越暗
+            pair.append(low[ch] * env)
+        samples.append(pair)
+        peak = max(peak, abs(pair[0]), abs(pair[1]))
+    # 能量归一：卷积后的响度和原声差不多（再由滑块决定送多少）；同时保证不超过 16 位范围
+    energy = max(sum(a * a for a, _ in samples), sum(b * b for _, b in samples)) or 1.0
+    scale = min(1.0 / energy ** 0.5, 0.99 / (peak or 1.0))
+    for left, right in samples:
+        frames += struct.pack("<hh", int(left * scale * 32767), int(right * scale * 32767))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(2)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(bytes(frames))
+
+
+def impulse(kind: str) -> str:
+    """hall = 现场感用的大厅混响；room = 耳机空间音频用的短早期反射。第一次用时生成，之后复用。"""
+    path = HERE / ".tools" / f"ir_{kind}.wav"
+    if not path.is_file():
+        if kind == "hall":
+            _write_ir(path, 2.2, 0.025, 1.8, 7)
+        else:
+            _write_ir(path, 0.35, 0.004, 0.25, 11)
+    return str(path)
+
+
 class Cancelled(Exception):
     """用户点了“取消”。"""
 
@@ -371,9 +431,39 @@ DEFAULT_SETTINGS = {
     "inst_treble": 0.0,  # 伴奏高频（dB）
     "inst_soften": 0.0,  # 伴奏动态柔化：只在特别刺耳的时刻压 2–5 kHz（0–1）
     "loudness": "match",  # match = 和原视频一样响；normalize = 统一到 -14 LUFS；off = 不调整
+    "width": 0.0,        # 伪立体声宽度（0–1）：伴奏往两边展开，人声留在中间；单声道播放时完全抵消，不会变味
+    "ambience": 0.0,     # 现场感（-1–1）：负 = 减少场馆混响（需勾选“去混响”）；正 = 加音乐厅空间感
+    "headphone": False,  # 耳机空间音频：交叉馈送 + 早期反射，像站在场馆里听
+    "reference": None,   # 参考曲音色：{"name": 文件名, "levels": 1/3 倍频程频谱}
 }
 LOUDNESS_MODES = {"和原视频一样响（推荐）": "match", "统一到 -14 LUFS（流媒体标准）": "normalize", "不调整": "off"}
 BASS_HZ, MID_HZ, TREBLE_HZ, HARSH_HZ = 120.0, 1500.0, 5000.0, 3200.0
+
+
+TONE_CENTERS = [round(31.5 * 2 ** (i / 3), 1) for i in range(28)]
+
+
+def reference_curve(processed: list[float], reference: list[float], cutoff: float | None) -> dict:
+    """参考曲音色匹配：和 tone.tone_curve 同样的规则（平滑、上限、高频最多 +3 dB），只是目标换成参考曲。"""
+    def norm(levels):
+        mids = [v for c, v in zip(TONE_CENTERS, levels) if 200 <= c <= 2000]
+        ref = sum(mids) / len(mids)
+        return [v - ref for v in levels]
+    diff = [(t - m) * 0.8 for t, m in zip(norm(reference), norm(processed))]
+    for _ in range(2):
+        padded = [diff[0]] + diff + [diff[-1]]
+        diff = [(padded[i] + padded[i + 1] + padded[i + 2]) / 3 for i in range(len(diff))]
+    top = min(cutoff or 16000.0, 16000.0)
+    out = {}
+    for c, g in zip(TONE_CENTERS, diff):
+        g = max(-10.0, min(6.0, g))
+        if c > top * 0.9 or c < 40:
+            g = min(g, 0.0)
+        if c > 6000:
+            g = min(g, 3.0)
+        out[c] = g
+    mid = sum(g for c, g in out.items() if 200 <= c <= 2000) / sum(1 for c in out if 200 <= c <= 2000)
+    return {c: round(g - mid, 2) for c, g in out.items()}
 
 
 def eq_curve(settings: dict, analysis: dict | None, part: str | None = None) -> list[tuple[float, float]]:
@@ -383,6 +473,9 @@ def eq_curve(settings: dict, analysis: dict | None, part: str | None = None) -> 
 
     centers = (analysis or {}).get("centers") or [31.5 * 2 ** (i / 3) for i in range(28)]
     auto = dict((round(c, 1), g) for c, g in (analysis or {}).get("auto_curve") or [])
+    reference = settings.get("reference")
+    if reference and analysis and analysis.get("processed"):
+        auto = reference_curve(analysis["processed"], reference["levels"], analysis.get("cutoff"))
     points = []
     for f in list(centers) + [20000.0]:
         gain = settings.get("auto", 0.0) * auto.get(round(f, 1), 0.0)
@@ -571,7 +664,12 @@ def render(ffmpeg: str, session: dict, settings: dict, target: str, codec: list[
                 parts.extend(_soften_graph("[Ipre]", "[I]", soften, analysis, settings, wet * gi))
             else:
                 parts.append(f"[b][n]amix=inputs=2:normalize=0:duration=first,{eq_inst}[I]")
-            finals.append("[I]")
+            width = float(settings.get("width", 0.0)) if only is None else 0.0
+            if width > 0.01:
+                parts.append("[I]asplit=2[Imain][Iside]")
+                finals.append("[Imain]")
+            else:
+                finals.append("[I]")
         else:
             parts.append("[s2]anullsink")
             parts.append("[s3]anullsink")
@@ -582,6 +680,11 @@ def render(ffmpeg: str, session: dict, settings: dict, target: str, codec: list[
     if only is None and dry > 0:
         parts.append(f"[1:a]volume={dry:.8f}[d]")
         rest.append("[d]")
+    ambience = float(settings.get("ambience", 0.0)) if only is None else 0.0
+    if layout.get("reverb") is not None and ambience < -0.01:
+        # 混响 = 处理后 − 去混响后；减去一部分混响 = 场馆回声变少
+        parts.append(f"[0:a]{chans(layout['reverb'])},volume={wet * ambience:.8f}[rv]")
+        rest.append("[rv]")
     if layout.get("highs") is not None and air > 0 and only != "vocals":
         parts.append(f"[0:a]{chans(layout['highs'])},volume={air:.8f}[h]")
         rest.append("[h]")
@@ -593,13 +696,46 @@ def render(ffmpeg: str, session: dict, settings: dict, target: str, codec: list[
     if not finals:
         raise RuntimeError("没有可以导出的声音。")
     total_delay = FIR_DELAY * (2 if soften > 0.01 else 1)
-    head = f"{''.join(finals)}amix=inputs={len(finals)}:normalize=0:duration=first," if len(finals) > 1 else f"{finals[0]}"
+    extra_inputs = []
+    if len(finals) > 1:
+        parts.append(f"{''.join(finals)}amix=inputs={len(finals)}:normalize=0:duration=first[pre]")
+    else:
+        parts.append(f"{finals[0]}anull[pre]")
+    cur = "[pre]"
+    if only is None and ambience > 0.01:
+        # 加音乐厅空间感：混响“送”一部分，干声不变
+        extra_inputs.append(impulse("hall"))
+        idx = 1 + len(extra_inputs)
+        parts.append(f"{cur}asplit=2[hd][hs]")
+        parts.append(f"[hs][{idx}:a]afir=gtype=none:irnorm=-1:irgain=1,volume={0.35 * ambience:.4f}[hw]")
+        parts.append("[hd][hw]amix=inputs=2:normalize=0:duration=first[amb]")
+        cur = "[amb]"
+    width = float(settings.get("width", 0.0)) if only is None else 0.0
+    if width > 0.01:
+        # 伪立体声：侧声道 = 伴奏（没分离时用整体）的去相关版本；左 = 中 + 侧，右 = 中 − 侧（单声道播放时完全抵消）
+        if not split:
+            parts.append(f"{cur}asplit=2[wm][Iside]")
+            cur = "[wm]"
+        parts.append(f"[Iside]pan=mono|c0=0.5*c0+0.5*c1,highpass=f=250,adelay=13,volume={0.7 * width:.4f}[side]")
+        parts.append(f"{cur}[side]amerge=inputs=2,pan=stereo|c0=c0+c2|c1=c1-c2[wide]")
+        cur = "[wide]"
+    if only is None and settings.get("headphone"):
+        # 耳机空间音频：交叉馈送（像用音箱听，左右耳都能听到对面）+ 左右不同的短早期反射
+        extra_inputs.append(impulse("room"))
+        idx = 1 + len(extra_inputs)
+        parts.append(f"{cur}crossfeed=strength=0.3:range=0.55,asplit=2[hpd][hps]")
+        parts.append(f"[hps][{idx}:a]afir=gtype=none:irnorm=-1:irgain=1,volume=0.3[hpr]")
+        parts.append("[hpd][hpr]amix=inputs=2:normalize=0:duration=first[hp]")
+        cur = "[hp]"
     frames = wav_frames(session["processed"])
     end = f":end_sample={total_delay + frames}" if frames else ""
-    parts.append(f"{head}atrim=start_sample={total_delay}{end},asetpts=N/SR/TB[out]")
+    parts.append(f"{cur}atrim=start_sample={total_delay}{end},asetpts=N/SR/TB[out]")
     graph = ";".join(parts)
     mixed = target + ".mix.wav"
-    _ffmpeg(ffmpeg, ["-i", session["processed"], "-i", session["original"], "-filter_complex", graph,
+    inputs = ["-i", session["processed"], "-i", session["original"]]
+    for extra in extra_inputs:
+        inputs += ["-i", extra]
+    _ffmpeg(ffmpeg, inputs + ["-filter_complex", graph,
                      "-map", "[out]", "-c:a", "pcm_f32le", "-y", mixed], "混合与均衡")
     try:
         mode = settings.get("loudness") or ("normalize" if settings.get("normalize") else "match")

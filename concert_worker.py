@@ -27,6 +27,8 @@ MODELS = {
 # 人声/伴奏分离（Kimberley Jensen 的 Mel-Band RoFormer 人声模型，约 900 MB）：只取人声，伴奏 = 原来 − 人声，
 # 这样两者相加严格等于不分离时的结果，默认设置下音色完全不变
 VOCAL_MODEL = ("vocals_mel_band_roformer.ckpt", "vocals")
+# 去混响（anvuew 的 Mel-Band RoFormer De-Reverb，SDR 19.2）：只存“混响”这一部分，用滑块决定留多少
+DEREVERB_MODEL = ("dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt", "noreverb")
 # 音质修复：Apollo Universal（修复有损压缩：补回被砍掉的高频、减轻压缩失真）
 APOLLO_FILE = "apollo_universal_model.ckpt"
 APOLLO_PATH = "ASesYusuf1/Apollo_universal_model/resolve/main/apollo_universal_model.ckpt"
@@ -34,7 +36,7 @@ APOLLO_PATH = "ASesYusuf1/Apollo_universal_model/resolve/main/apollo_universal_m
 APOLLO_URLS = ["https://huggingface.co/" + APOLLO_PATH, "https://hf-mirror.com/" + APOLLO_PATH]
 APOLLO_CONFIG = dict(sr=44100, win=20, feature_dim=384, layer=6)
 APOLLO_CHUNK = 132300  # 3 秒，和训练时一致
-STEP_NAMES = {"crowd": "去观众声", "denoise": "去底噪", "restore": "音质修复", "split": "分离人声和伴奏"}
+STEP_NAMES = {"crowd": "去观众声", "denoise": "去底噪", "restore": "音质修复", "split": "分离人声和伴奏", "dereverb": "分离混响"}
 SEGMENT_SECONDS = 300
 OVERLAP_SECONDS = 2
 
@@ -72,9 +74,19 @@ def _install_hooks() -> None:
 
         name = os.path.basename(output_path)
         part = output_path + ".part"
-        response = requests.get(url, stream=True, timeout=300)
-        if response.status_code != 200:
-            raise RuntimeError(f"下载 {name} 失败（HTTP {response.status_code}），请检查网络后重试。")
+        urls = [url] + ([url.replace("https://huggingface.co/", "https://hf-mirror.com/")] if "huggingface.co/" in url else [])
+        response, problem = None, ""
+        for candidate in urls:           # Hugging Face 连不上时自动改用镜像
+            try:
+                response = requests.get(candidate, stream=True, timeout=60)
+                if response.status_code == 200:
+                    break
+                problem = f"HTTP {response.status_code}"
+            except Exception as error:
+                problem = str(error)[:200]
+            response = None
+        if response is None:
+            raise RuntimeError(f"下载 {name} 失败（{problem}），请检查网络后重试。")
         total = int(response.headers.get("content-length", 0))
         done, last = 0, 0
         with open(part, "wb") as handle:
@@ -138,7 +150,7 @@ def download(models_dir: str) -> None:
     os.makedirs(models_dir, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         sep = make_separator(models_dir, tmp)
-        models = [model for model, _ in MODELS.values()] + [VOCAL_MODEL[0]]
+        models = [model for model, _ in MODELS.values()] + [VOCAL_MODEL[0], DEREVERB_MODEL[0]]
         for i, model in enumerate(models, 1):
             emit("progress", stage=f"下载模型 {i}/{len(models)}", fraction=(i - 1) / len(models))
             sep.download_model_files(model)
@@ -238,6 +250,43 @@ class ApolloRestorer:
         return out[:, hop:hop + n].T.astype(np.float32)
 
 
+KEY_NAMES = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
+
+
+def detect_key_tempo(mono, rate: int) -> dict:
+    """调性（Krumhansl 调性轮廓）和速度（librosa 节拍跟踪）。只是参考，现场录音可能不准。"""
+    import numpy as np
+    if len(mono) < rate * 10:
+        return {}
+    try:
+        import librosa
+        chroma = librosa.feature.chroma_stft(y=mono, sr=rate, hop_length=4096).mean(axis=1)
+        major = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+        minor = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+        best = max(((np.corrcoef(np.roll(profile, shift), chroma)[0, 1], shift, mode)
+                    for mode, profile in (("major", major), ("minor", minor)) for shift in range(12)))
+        tempo, _ = librosa.beat.beat_track(y=mono, sr=rate, hop_length=512)
+        return {"key": KEY_NAMES[best[1]] + (" 大调" if best[2] == "major" else " 小调"),
+                "key_confidence": round(float(best[0]), 2),
+                "bpm": round(float(np.atleast_1d(tempo)[0]))}
+    except Exception as error:  # 分析失败不影响主流程
+        emit("notice", message=f"调性/速度分析失败：{str(error)[:120]}")
+        return {}
+
+
+def reference_levels(path: str) -> None:
+    """参考曲的长期 1/3 倍频程频谱（给“参考曲音色匹配”用）。"""
+    import soundfile as sf
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import tone
+    info = sf.info(path)
+    meter = tone.SpectrumMeter(info.samplerate)
+    for block in sf.blocks(path, blocksize=info.samplerate * 30, dtype="float32", always_2d=True):
+        meter.add(block)
+    emit("reference", levels=[round(float(v), 2) for v in tone.band_levels(*meter.spectrum())])
+    emit("done", output=path)
+
+
 def separate_file(sep, path: str, keep: str) -> str:
     outputs = sep.separate(path)
     for name in outputs:
@@ -279,6 +328,7 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
         emit("notice", message=f"检测到压缩截止频率约 {cutoff / 1000:.1f} kHz，只补这以上的部分。")
     sep_steps = [s for s in steps if s in MODELS]
     split = "split" in steps
+    dereverb = "dereverb" in steps
     highpass = tone.highpass_fir(cutoff, rate) if restore else None
 
     seg, ov = SEGMENT_SECONDS * rate, OVERLAP_SECONDS * rate
@@ -286,8 +336,13 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
     loaded = {}
     meter_base, meter_high, meter_voc = tone.SpectrumMeter(rate), tone.SpectrumMeter(rate), tone.SpectrumMeter(rate)
     line_base, line_inst, line_voc = tone.Timeline(rate), tone.Timeline(rate), tone.Timeline(rate)
-    layout = {"base": 0, "highs": 2 if restore else None, "vocals": (4 if restore else 2) if split else None}
-    width = 2 + 2 * restore + 2 * split
+    layout = {"base": 0, "highs": None, "vocals": None, "reverb": None}
+    width = 2
+    for key, on in (("highs", restore), ("vocals", split), ("reverb", dereverb)):
+        if on:
+            layout[key] = width
+            width += 2
+    tonal = []  # 调性/速度分析用：最多 10 分钟、22 kHz 单声道
 
     with tempfile.TemporaryDirectory(prefix="concert_") as tmp, \
             sf.SoundFile(out, "w", samplerate=rate, channels=width, subtype="PCM_24") as dst:
@@ -298,6 +353,8 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
         def write(data):
             dst.write(data)
             meter_base.add(data[:, :2])
+            if sum(len(t) for t in tonal) < 22050 * 600:
+                tonal.append(data[::2, :2].mean(axis=1).astype(np.float32))
             line_base.add(data[:, :2])
             if split:
                 vocals_part = data[:, layout["vocals"]:layout["vocals"] + 2]
@@ -309,7 +366,7 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
                 meter_voc.add(data[:, layout["vocals"]:layout["vocals"] + 2])
 
         tail = None  # 上一段末尾的重叠部分（等待与下一段交叉淡化）
-        total_steps = len(sep_steps) + (1 if restore else 0) + (1 if split else 0)
+        total_steps = len(sep_steps) + (1 if restore else 0) + (1 if split else 0) + (1 if dereverb else 0)
         for index, start in enumerate(starts):
             read_start = max(0, start - ov) if index > 0 else 0
             read_end = min(total, start + seg + (ov if index + 1 < len(starts) else 0))
@@ -363,6 +420,22 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
                     vocals = np.vstack([vocals, np.zeros((want - len(vocals), vocals.shape[1]), dtype=np.float32)])
                 done = np.hstack([done, vocals[:want, :2]])
 
+            if dereverb:
+                frac = (index + (total_steps - 1) / max(total_steps, 1)) / len(starts)
+                stage = f"第 {index + 1}/{len(starts)} 段 · 分离混响"
+                emit("progress", stage=stage, fraction=frac)
+                base_path = os.path.join(tmp, f"seg{index:04d}_rev.wav")
+                sf.write(base_path, done[:, :2], rate, subtype="FLOAT")
+                PROGRESS["cb"] = lambda x, b=frac, st=stage: emit("progress", stage=st, fraction=b + x / max(total_steps, 1) / len(starts))
+                dry_path = pool.separate(DEREVERB_MODEL[0], base_path, DEREVERB_MODEL[1])
+                PROGRESS["cb"] = None
+                dry, _ = sf.read(dry_path, dtype="float32", always_2d=True)
+                os.remove(dry_path)
+                os.remove(base_path)
+                if len(dry) < want:
+                    dry = np.vstack([dry, np.zeros((want - len(dry), dry.shape[1]), dtype=np.float32)])
+                done = np.hstack([done, done[:, :2] - dry[:want, :2]])   # 混响 = 原来 − 去混响后
+
             # 本段读入范围 = [start-ov, end+ov]：左边 ov 只作上下文丢弃；
             # [start, start+ov) 与上一段多处理的尾巴交叉淡化；[end, end+ov) 留作本段的尾巴。
             ctx = start - read_start
@@ -390,11 +463,13 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
             "layout": layout,
             "vocals": [round(float(v), 2) for v in tone.band_levels(freqs, meter_voc.spectrum()[1])] if split else None,
         }
+        analysis.update(detect_key_tempo(np.concatenate(tonal) if tonal else np.zeros(0, np.float32), 22050))
         loud, harsh = line_base.result()
         analysis["timeline"] = {"loud": loud, "harsh": harsh}
         if split:
             analysis["timeline"]["vocal"] = line_voc.result()[0]
             analysis["timeline"]["inst_harsh"] = line_inst.result()[1]
+        analysis["layout"] = layout
         with open(analysis_path, "w", encoding="utf-8") as handle:
             json.dump(analysis, handle)
     emit("done", output=out)
@@ -408,6 +483,7 @@ def main() -> int:
     parser.add_argument("--models", required=True)
     parser.add_argument("--steps", default="crowd,denoise")
     parser.add_argument("--analysis")
+    parser.add_argument("--reference", help="只分析参考曲的频谱")
     parser.add_argument("--no-fast", action="store_true", help="不用半精度（结果和旧版逐位一致，速度慢一些）")
     args = parser.parse_args()
     try:
@@ -417,7 +493,9 @@ def main() -> int:
     try:
         FAST["on"] = not args.no_fast
         _install_hooks()
-        if args.download:
+        if args.reference:
+            reference_levels(args.reference)
+        elif args.download:
             download(args.models)
         else:
             steps = [s for s in args.steps.split(",") if s in STEP_NAMES]

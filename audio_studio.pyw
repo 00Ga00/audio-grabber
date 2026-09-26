@@ -45,6 +45,10 @@ def main() -> None:
     except Exception:
         pass
 
+    import i18n
+    import updater
+    i18n.install()   # 界面语言（中文 / English / Deutsch），必须在创建窗口之前
+
     root = tk.Tk()
     root.title(f"{APP_TITLE} {APP_VERSION}")
     # 按屏幕缩放（125%/150%/200%）放大窗口，高分屏上不会挤成一团
@@ -82,8 +86,62 @@ def main() -> None:
 
     shell = ttk.Frame(root, padding=(20, 16))
     shell.pack(fill="both", expand=True)
-    ttk.Label(shell, text="Audio Studio", style="Title.TLabel").pack(anchor="w")
-    ttk.Label(shell, text="提取 · 录制 · 增强，全程在本机处理", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 12))
+    header = ttk.Frame(shell, style="TFrame")
+    header.pack(fill="x")
+    ttk.Label(header, text="Audio Studio", style="Title.TLabel").pack(side="left", anchor="w")
+    update_button = ttk.Button(header, text="检查更新")
+    update_button.pack(side="right")
+    language_var = tk.StringVar(value=i18n.LANGUAGES[i18n.LANG])
+    language_box = ttk.Combobox(header, textvariable=language_var, values=list(i18n.LANGUAGES.values()), state="readonly", width=9)
+    language_box.pack(side="right", padx=(0, 10))
+    ttk.Label(header, text="语言 / Language", style="Subtitle.TLabel").pack(side="right", padx=(0, 6))
+    update_state = {"info": None}
+
+    def language_changed(_event=None):
+        code = next(k for k, v in i18n.LANGUAGES.items() if v == language_var.get())
+        if code == i18n.LANG:
+            return
+        i18n.save_language(code)
+        if messagebox.askyesno(APP_TITLE, {"zh": "语言已切换，重新打开程序后生效。现在重启吗？",
+                                           "en": "Language changed. Restart Audio Studio now to apply it?",
+                                           "de": "Sprache geändert. Audio Studio jetzt neu starten?"}[code]):
+            updater.restart()
+            root.destroy()
+
+    language_box.bind("<<ComboboxSelected>>", language_changed)
+
+    def check_updates(silent=False):
+        def worker():
+            try:
+                events.put(("update_status", (updater.check(), silent)))
+            except Exception as error:
+                if not silent:
+                    events.put(("update_error", str(error)))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def update_clicked():
+        info = update_state["info"]
+        if not info or not info.get("update"):
+            update_button.configure(text="检查更新")
+            check_updates(silent=False)
+            return
+        if updater.is_git_checkout():
+            messagebox.showinfo(APP_TITLE, "这个文件夹是 git 仓库：请在 GitHub Desktop 里点 “Fetch origin” → “Pull origin” 更新。")
+            return
+        if not messagebox.askyesno(APP_TITLE, "发现新版本。现在下载并更新吗？\n只替换程序文件，AI 组件、模型、设置和你的文件都不动；更新完会自动重启。"):
+            return
+        update_button.configure(text="正在更新……", state="disabled")
+
+        def worker():
+            try:
+                updater.apply()
+                events.put(("update_done", None))
+            except Exception as error:
+                events.put(("update_error", str(error)))
+        threading.Thread(target=worker, daemon=True).start()
+
+    update_button.configure(command=update_clicked)
+    ttk.Label(shell, text="提取 · 录制 · 增强，全程在本机处理", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 4))
     notebook = ttk.Notebook(shell)
     notebook.pack(fill="both", expand=True)
 
@@ -512,6 +570,7 @@ def main() -> None:
     c_denoise = tk.BooleanVar(value=True)
     c_restore = tk.BooleanVar(value=True)
     c_split = tk.BooleanVar(value=True)
+    c_dereverb = tk.BooleanVar(value=False)
     c_stems = tk.BooleanVar(value=False)
     c_strength = tk.StringVar(value="标准（推荐）")
     c_video = tk.BooleanVar(value=True)
@@ -561,16 +620,17 @@ def main() -> None:
 
     c_opts = ttk.Frame(c_card, style="Card.TFrame")
     c_opts.grid(row=4, column=0, columnspan=3, sticky="w", pady=6)
-    ttk.Checkbutton(c_opts, text="去观众声（尖叫/鼓掌）", variable=c_crowd).pack(side="left")
-    ttk.Checkbutton(c_opts, text="去底噪（嘶嘶/风声）", variable=c_denoise).pack(side="left", padx=(14, 0))
-    ttk.Checkbutton(c_opts, text="音质修复（补回高音）", variable=c_restore).pack(side="left", padx=(14, 0))
+    ttk.Checkbutton(c_opts, text="去观众声", variable=c_crowd).pack(side="left")
+    ttk.Checkbutton(c_opts, text="去底噪", variable=c_denoise).pack(side="left", padx=(14, 0))
+    ttk.Checkbutton(c_opts, text="音质修复（补高音）", variable=c_restore).pack(side="left", padx=(14, 0))
     c_opts2 = ttk.Frame(c_card, style="Card.TFrame")
     c_opts2.grid(row=5, column=0, columnspan=3, sticky="w", pady=(0, 6))
     ttk.Checkbutton(c_opts2, text="同时生成视频（画面不重新压缩）", variable=c_video).pack(side="left")
     c_loudness = tk.StringVar(value="和原视频一样响（推荐）")
     ttk.Label(c_opts2, text="音量", style="Card.TLabel").pack(side="left", padx=(14, 4))
     ttk.Combobox(c_opts2, textvariable=c_loudness, values=list(concert.LOUDNESS_MODES), state="readonly", width=24).pack(side="left")
-    ttk.Checkbutton(c_opts, text="分离人声和伴奏（分开调）", variable=c_split).pack(side="left", padx=(14, 0))
+    ttk.Checkbutton(c_opts, text="分离人声和伴奏", variable=c_split).pack(side="left", padx=(14, 0))
+    ttk.Checkbutton(c_opts, text="去混响（可调现场感）", variable=c_dereverb).pack(side="left", padx=(14, 0))
     ttk.Checkbutton(c_opts2, text="另存人声、伴奏分轨", variable=c_stems).pack(side="left", padx=(14, 0))
 
     # ---- 调音：滑块 + 频谱可视化
@@ -597,6 +657,10 @@ def main() -> None:
             ("inst_treble", "伴奏高频", -10.0, 6.0, "db"),
             ("inst_soften", "伴奏动态柔化", 0.0, 1.0, "pct"),
         ]),
+        ("空间 / 参考曲", [
+            ("width", "立体声宽度", 0.0, 1.0, "pct"),
+            ("ambience", "现场感（干 ↔ 空间）", -1.0, 1.0, "spct"),
+        ]),
     ]
     SLIDERS = [item for _, items in SLIDER_PAGES for item in items]
     c_vars = {key: tk.DoubleVar(value=float(start_values[key])) for key, *_ in SLIDERS}
@@ -611,11 +675,18 @@ def main() -> None:
 
     def fmt(key, value):
         kind = next(k for k_, _, _, _, k in SLIDERS if k_ == key)
+        if kind == "spct":
+            return f"{value * 100:+.0f}%"
         return f"{value * 100:.0f}%" if kind == "pct" else f"{value:+.1f} dB"
+
+    c_headphone = tk.BooleanVar(value=bool(start_values.get("headphone", False)))
+    c_reference = {"value": start_values.get("reference")}
 
     def current_settings():
         values = {key: round(var.get(), 3) for key, var in c_vars.items()}
         values["loudness"] = concert.LOUDNESS_MODES.get(c_loudness.get(), "match")
+        values["headphone"] = bool(c_headphone.get())
+        values["reference"] = c_reference["value"]
         return values
 
     for page_name, items in SLIDER_PAGES:
@@ -623,15 +694,27 @@ def main() -> None:
         c_pages.add(page, text=page_name)
         for row, (key, name, low, high, kind) in enumerate(items):
             ttk.Label(page, text=name, style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=0)
-            slider = ttk.Scale(page, from_=low, to=high, variable=c_vars[key], length=int(170 * scale),
+            slider = ttk.Scale(page, from_=low, to=high, variable=c_vars[key], length=int((170 if i18n.LANG == "zh" else 130) * scale),
                                command=lambda _v, k=key: on_setting_change(k))
             slider.grid(row=row, column=1, padx=6)
             slider.bind("<Double-Button-1>", lambda _e, k=key: (c_vars[k].set(float(concert.DEFAULT_SETTINGS[k])), on_setting_change(k)))
             label = ttk.Label(page, text=fmt(key, c_vars[key].get()), style="Muted.Card.TLabel", width=9)
             label.grid(row=row, column=2, sticky="w")
             c_value_labels[key] = label
+        if page_name.startswith("空间"):
+            ttk.Checkbutton(page, text="耳机空间音频（戴耳机听像在场馆里）", variable=c_headphone,
+                            command=lambda: on_setting_change(None)).grid(row=len(items), column=0, columnspan=3, sticky="w", pady=(4, 0))
+            ref_row = ttk.Frame(page, style="Card.TFrame")
+            ref_row.grid(row=len(items) + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+            ttk.Label(ref_row, text="参考曲：", style="Card.TLabel").pack(side="left")
+            c_ref_label = ttk.Label(ref_row, text="", style="Muted.Card.TLabel", width=16)
+            c_ref_label.pack(side="left")
+            ttk.Button(ref_row, text="选择…", command=lambda: choose_reference()).pack(side="left", padx=(4, 0))
+            ttk.Button(ref_row, text="清除", command=lambda: set_reference(None)).pack(side="left", padx=(4, 0))
+            ttk.Label(page, text="参考曲选同一首歌的录音室版；现场感往左需勾“去混响”",
+                      style="Muted.Card.TLabel").grid(row=len(items) + 2, column=0, columnspan=3, sticky="w", pady=(2, 0))
         if page_name.startswith("人声"):
-            ttk.Label(page, text="只影响伴奏，人声不变（需勾选“分离人声和伴奏”）", style="Muted.Card.TLabel").grid(
+            ttk.Label(page, text="只影响伴奏，人声不变（需勾选“分离人声和伴奏”）", style="Muted.Card.TLabel", wraplength=int(300 * scale)).grid(
                 row=len(items), column=0, columnspan=3, sticky="w", pady=(2, 0))
 
     c_preset_row = ttk.Frame(c_sliders, style="Card.TFrame")
@@ -644,10 +727,36 @@ def main() -> None:
         names = [name for name in presets if not name.startswith("_")]
         c_preset_box.configure(values=["默认"] + names)
 
+    def set_reference(value):
+        c_reference["value"] = value
+        c_ref_label.configure(text=(value or {}).get("name", "未选择")[:16])
+        on_setting_change(None)
+
+    def choose_reference():
+        if not concert.ai_available():
+            messagebox.showinfo(APP_TITLE, "需要先安装演唱会降噪组件。")
+            return
+        chosen = filedialog.askopenfilename(filetypes=concert.MEDIA_TYPES, title="选择参考曲（同一首歌的录音室版）")
+        if not chosen:
+            return
+        ffmpeg = core.find_ffmpeg()
+        c_status.set("正在分析参考曲……")
+
+        def worker():
+            try:
+                events.put(("concert_reference", concert.analyze_reference(ffmpeg, chosen)))
+            except Exception as error:
+                events.put(("concert_error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def apply_values(values):
         for key, var in c_vars.items():
             if key in values:
                 var.set(float(values[key]))
+        c_headphone.set(bool(values.get("headphone", False)))
+        if "reference" in values:
+            set_reference(values.get("reference"))
         if values.get("loudness") in loud_names:
             c_loudness.set(loud_names[values["loudness"]])
         on_setting_change(None)
@@ -679,6 +788,7 @@ def main() -> None:
     ttk.Button(c_preset_row, text="删除", command=delete_preset).pack(side="left", padx=(4, 0))
     ttk.Button(c_preset_row, text="恢复默认", command=lambda: (c_preset.set("默认"), apply_values(concert.DEFAULT_SETTINGS))).pack(side="left", padx=(4, 0))
     refresh_presets()
+    c_ref_label.configure(text=(c_reference["value"] or {}).get("name", "未选择")[:16])
 
     c_right = ttk.Frame(c_tune, style="Card.TFrame")
     c_right.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
@@ -783,7 +893,7 @@ def main() -> None:
             if any(abs(a[1] - b[1]) > 0.05 for a, b in zip(eq, eq_inst)):
                 cv.create_line(*[v for f, g in eq_inst if fmin <= f <= fmax for v in (x_of(f), y_eq(g))],
                                fill="#9b59b6", width=2, smooth=True, dash=(4, 3))
-                cv.create_text(left + 4, top + 8, text="紫虚线 = 伴奏均衡", anchor="w", fill="#9b59b6", font=("Microsoft YaHei UI", 8))
+                cv.create_text(left + 4, top + 22, text="紫虚线 = 伴奏均衡", anchor="w", fill="#9b59b6", font=("Microsoft YaHei UI", 8))
         cv.create_text(left - 4, y_eq(12), text="+12", anchor="e", fill="#e8871e", font=("Microsoft YaHei UI", 7))
         cv.create_text(left - 4, y_eq(-12), text="-12", anchor="e", fill="#e8871e", font=("Microsoft YaHei UI", 7))
         if not analysis:
@@ -802,6 +912,9 @@ def main() -> None:
             pts = [v for c, lv in zip(centers, levels) for v in (x_of(c), min(max(y_spec(lv), top), h - bottom))]
             cv.create_line(*pts, fill=color, width=width_, smooth=True, dash=dash)
 
+        if analysis.get("key") or analysis.get("bpm"):
+            info = " · ".join(x for x in (analysis.get("key"), f"约 {analysis['bpm']} BPM" if analysis.get("bpm") else "") if x)
+            cv.create_text((w + left) / 2, h - bottom - 8, text=info, fill="#4a5563", font=("Microsoft YaHei UI", 8, "bold"))
         poly(analysis["original"], "#9aa4b2", 2)
         poly(after, "#2f6fdf", 2)
         if analysis.get("cutoff"):
@@ -835,7 +948,7 @@ def main() -> None:
             button.configure(state="disabled")
         draw_spectrum()
 
-    for var in (c_crowd, c_denoise, c_restore, c_split, c_input):
+    for var in (c_crowd, c_denoise, c_restore, c_split, c_dereverb, c_input):
         var.trace_add("write", forget_sessions)
 
     c_prev = ttk.Frame(c_card, style="Card.TFrame")
@@ -929,7 +1042,7 @@ def main() -> None:
         threading.Thread(target=worker, daemon=True).start()
 
     def selected_steps():
-        return [name for name, var in (("crowd", c_crowd), ("denoise", c_denoise), ("restore", c_restore), ("split", c_split)) if var.get()]
+        return [name for name, var in (("crowd", c_crowd), ("denoise", c_denoise), ("restore", c_restore), ("split", c_split), ("dereverb", c_dereverb)) if var.get()]
 
     def concert_job(preview):
         if state.get("concert_busy"):
@@ -1236,6 +1349,25 @@ def main() -> None:
                     c_status.set("已按新设置更新试听")
                     concert.PLAYER.load(original=value["preview_original"], processed=value["preview_processed"])
                     concert.PLAYER.play("processed", state.get("resume_at", 0))
+                elif kind == "update_status":
+                    info, silent = value
+                    update_state["info"] = info
+                    if info.get("update"):
+                        update_button.configure(text="有新版本 · 点此更新", state="normal")
+                    else:
+                        update_button.configure(text="已是最新版", state="normal")
+                        if not silent:
+                            messagebox.showinfo(APP_TITLE, "已是最新版")
+                elif kind == "update_error":
+                    update_button.configure(text="检查更新", state="normal")
+                    messagebox.showerror(APP_TITLE, value)
+                elif kind == "update_done":
+                    updater.restart()
+                    root.destroy()
+                    return
+                elif kind == "concert_reference":
+                    set_reference(value)
+                    c_status.set(f"参考曲已设置：{value['name']}（自动音色校正会照着它来）")
                 elif kind == "concert_timeline":
                     path, data = value
                     if path == c_input.get():
@@ -1303,6 +1435,7 @@ def main() -> None:
             pass
 
     enable_drag_and_drop()
+    root.after(4000, lambda: check_updates(silent=True))
     hotkeys = GlobalHotkeys(hotkey_toggle, hotkey_pause)
     hotkeys.start()
 
