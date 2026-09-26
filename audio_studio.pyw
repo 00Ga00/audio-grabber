@@ -1871,8 +1871,19 @@ def main() -> None:
     ttk.Button(g_card, text="浏览…", command=lambda: g_temp.set(filedialog.askdirectory() or g_temp.get())).grid(row=13, column=2, sticky="e")
     ttk.Label(g_card, text="留空 = 系统临时文件夹（一般在 C 盘）；整场演唱会每小时约 3 GB，旧的会自动删掉", style="Muted.Card.TLabel").grid(
         row=14, column=1, columnspan=3, sticky="w", padx=8)
-    ttk.Checkbutton(g_card, text="显卡半精度加速（约快 1.5–2 倍；关掉则和旧版逐位一致）", variable=c_fast).grid(
-        row=15, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    g_speed = ttk.Frame(g_card, style="Card.TFrame")
+    g_speed.grid(row=15, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    ttk.Checkbutton(g_speed, text="显卡半精度（快 1.5–2 倍）", variable=c_fast).pack(side="left")
+    # 快速分离：分离模型每个采样只算 2 遍（默认 4 遍）；实测快约 1.9 倍，和默认结果的差别约 −38 dB
+    g_fast_sep = tk.BooleanVar(value=bool(prefs["fast_sep"]) if "fast_sep" in prefs else False)
+    ttk.Checkbutton(g_speed, text="快速分离（快约 1.9 倍，差别约 −38 dB）", variable=g_fast_sep,
+                    command=lambda: apply_speed(True)).pack(side="left", padx=(16, 0))
+
+    def apply_speed(changed=False):
+        if changed:
+            prefs["fast_sep"] = bool(g_fast_sep.get())
+            concert.save_presets(presets)
+        concert.SPEED["overlap"] = 2 if g_fast_sep.get() else None
     g_saved = ttk.Label(g_card, text="", style="Muted.Card.TLabel")
     g_saved.grid(row=16, column=1, sticky="w", padx=8, pady=(10, 0))
 
@@ -1917,6 +1928,9 @@ def main() -> None:
         for key, var in (("crowd", c_crowd), ("denoise", c_denoise), ("restore", c_restore), ("split", c_split), ("dereverb", c_dereverb)):
             var.set(bool(chosen.get(key, var.get())))
         prefs.pop("score_default_set", None)
+        if "fast_sep" not in prefs:   # 没自己选过：中配、低配默认快速分离，高配默认最高质量
+            g_fast_sep.set(tier != "strong")
+        apply_speed()
         for key, var, box in (("restore", c_restore, c_restore_box), ("dereverb", c_dereverb, c_dereverb_box)):
             if key in lock:
                 var.set(False)

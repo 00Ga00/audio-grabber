@@ -298,6 +298,8 @@ AI 组件|AI components|KI-Komponenten
 第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
 录音组件|Recorder|Rekorder
 ● 有新版本|● Update available|● Update verfügbar
+显卡半精度（快 1.5–2 倍）|GPU half precision (1.5–2× faster)|GPU-Halbpräzision (1,5–2× schneller)
+快速分离（快约 1.9 倍，差别约 −38 dB）|Fast separation (≈1.9× faster, difference ≈ −38 dB)|Schnelle Trennung (≈1,9× schneller, Unterschied ≈ −38 dB)
 选择安装版本|Choose an edition|Version wählen
 安装演唱会降噪组件|Install concert cleanup|Konzert-Bereinigung installieren
 同时重装运行环境（组件出错时用）|Also reinstall the runtime (use if something is broken)|Laufzeitumgebung neu installieren (bei Fehlern)

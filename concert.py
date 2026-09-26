@@ -461,6 +461,38 @@ def cancel() -> None:
             pass
 
 
+SPEED = {"overlap": None}   # 设置页“快速分离”：2；None = 模型默认（4）
+PERF_LOG = HERE / ".tools" / "perf_log.jsonl"
+
+
+def _overlap_args() -> list[str]:
+    return ["--overlap", str(SPEED["overlap"])] if SPEED.get("overlap") else []
+
+
+def _write_perf(script, args: list[str], perf: dict, ok: bool) -> None:
+    """每次 AI 运行各阶段用了多少秒，记到本机日志里（只在本机，用来找慢在哪里）。"""
+    try:
+        keep = {}
+        for flag in ("--steps", "--size", "--beam", "--parallel", "--overlap", "--no-fast", "--low-vram", "--transcribe", "--stems", "--download"):
+            if flag in args:
+                i = args.index(flag)
+                value = args[i + 1] if i + 1 < len(args) and not args[i + 1].startswith("--") else True
+                keep[flag.lstrip("-")] = os.path.basename(value) if isinstance(value, str) and os.sep in value else value
+        seconds = None
+        for flag in ("--input", "--transcribe", "--stems"):
+            if flag in args:
+                frames = wav_frames(args[args.index(flag) + 1])   # 输入都是 44.1 kHz 的 WAV
+                seconds = round(frames / WORK_RATE, 1) if frames else None
+        entry = {"when": time.strftime("%Y-%m-%d %H:%M:%S"), "worker": Path(script or WORKER).stem, "ok": ok,
+                 "audio_seconds": seconds, "total": round(time.time() - perf["began"], 1), "device": perf["device"],
+                 "options": keep, "stages": perf["stages"]}
+        PERF_LOG.parent.mkdir(parents=True, exist_ok=True)
+        lines = PERF_LOG.read_text(encoding="utf-8").splitlines()[-199:] if PERF_LOG.is_file() else []
+        PERF_LOG.write_text("\n".join(lines + [json.dumps(entry, ensure_ascii=False)]) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def run_worker(args: list[str], on_event, on_log=None, script: Path | None = None) -> dict:
     """运行 AI 进程，把 JSON 事件交给 on_event；返回 done 事件，失败时抛出异常。"""
     if _RUNNING["cancelled"]:
@@ -472,6 +504,14 @@ def run_worker(args: list[str], on_event, on_log=None, script: Path | None = Non
     )
     _RUNNING["process"] = process
     done, error, tail = None, None, []
+    perf = {"began": time.time(), "stage": "启动（载入 PyTorch 等）", "since": time.time(), "stages": {}, "device": ""}
+
+    def note_stage(stage):
+        name = re.sub(r"第 \d+/\d+ 段 · |\s*\d+\s*/\s*\d+.*$|（.*?）| · .*$", "", stage or "").strip() or "准备"
+        now = time.time()
+        if perf["stage"] is not None:
+            perf["stages"][perf["stage"]] = round(perf["stages"].get(perf["stage"], 0) + now - perf["since"], 2)
+        perf["stage"], perf["since"] = name, now
     assert process.stdout
     for line in process.stdout:
         line = line.strip()
@@ -483,6 +523,10 @@ def run_worker(args: list[str], on_event, on_log=None, script: Path | None = Non
             except ValueError:
                 event = None
             if event:
+                if event.get("type") == "progress":
+                    note_stage(event.get("stage", ""))
+                elif event.get("type") == "device":
+                    perf["device"] = event.get("name", "")
                 if event.get("type") == "download":
                     TRANSFER.update(event.get("name", "") or "模型", event.get("done", 0), event.get("total", 0))
                 if event.get("type") == "done":
@@ -496,6 +540,8 @@ def run_worker(args: list[str], on_event, on_log=None, script: Path | None = Non
             on_log(line)
     code = process.wait()
     _RUNNING["process"] = None
+    note_stage("结束")
+    _write_perf(script, args, perf, ok=bool(done) and code == 0)
     if TRANSFER.active and not TRANSFER.task:
         TRANSFER.end("模型下载中断" if code else "模型下载完成")
     if _RUNNING["cancelled"]:
@@ -530,6 +576,21 @@ def probe(ffmpeg: str, path: str) -> dict:
         raise RuntimeError("这个文件里没有声音。")
     mono = bool(re.search(r"Stream #\S+.*: Audio: [^\n]*\bmono\b", text))
     return {"duration": duration, "has_video": video, "has_audio": audio, "mono": mono}
+
+
+_PEAKS: dict = {}
+
+
+def peak_level_cached(ffmpeg: str, path: str) -> float:
+    """同一个文件（大小和修改时间都没变）只测一次峰值：长视频每次试听都要从头读一遍，很慢。"""
+    try:
+        st = os.stat(path)
+        key = (os.path.abspath(path), st.st_size, st.st_mtime)
+    except OSError:
+        return peak_level(ffmpeg, path)
+    if key not in _PEAKS:
+        _PEAKS[key] = peak_level(ffmpeg, path)
+    return _PEAKS[key]
 
 
 def peak_level(ffmpeg: str, path: str) -> float:
@@ -758,6 +819,7 @@ def session_root() -> Path:
 def run_ai(source: str, ffmpeg: str, steps: list[str], preview_start: float | None = None,
            preview_length: float = 30.0, log=lambda _m: None, progress=lambda _f, _s="": None,
            fast: bool = True, low_vram: bool = False, kind_name: str | None = None) -> dict:
+    # overlap：用模块级设置 SPEED["overlap"]（设置页“快速分离”）
     """运行 AI 部分（慢），返回一个 session；之后可以用 render() 按不同设置反复导出（快）。"""
     import json
     import shutil as _shutil
@@ -780,7 +842,7 @@ def run_ai(source: str, ffmpeg: str, steps: list[str], preview_start: float | No
 
     log("正在分析音量……")
     progress(0.01, "分析音量")
-    peak = peak_level(ffmpeg, source) or 1.0
+    peak = peak_level_cached(ffmpeg, source) or 1.0
     gain = HEADROOM / peak
     original = str(folder / "original.wav")
     log("正在取出音频……")
@@ -803,7 +865,7 @@ def run_ai(source: str, ffmpeg: str, steps: list[str], preview_start: float | No
 
     run_worker(["--input", original, "--output", processed, "--models", str(MODELS_DIR),
                 "--steps", ",".join(steps), "--analysis", analysis_path] + ([] if fast else ["--no-fast"])
-               + (["--low-vram"] if low_vram else []), on_event)
+               + (["--low-vram"] if low_vram else []) + _overlap_args(), on_event)
     with open(analysis_path, encoding="utf-8") as handle:
         analysis = json.load(handle)
     progress(0.97, "AI 处理完成")
@@ -927,7 +989,7 @@ def render(ffmpeg: str, session: dict, settings: dict, target: str, codec: list[
         mode = settings.get("loudness") or ("normalize" if settings.get("normalize") else "match")
         chain = []
         if only is None and mode == "normalize":
-            chain.append("loudnorm=I=-14:LRA=20:TP=-1")   # 宽 LRA：只调整整体音量，尽量不压缩动态
+            chain += _gain_to(-14.0, *_loudness(ffmpeg, mixed))   # 只调整体音量，不用 loudnorm 的动态模式（会压缩动态）
         elif only is None and mode == "match":
             chain += _match_loudness(ffmpeg, session, mixed)
         else:
@@ -1000,20 +1062,17 @@ def _soften_graph(source: str, target: str, amount: float, analysis: dict, setti
 
 
 def _loudness(ffmpeg: str, path: str, pre_gain: float = 1.0) -> tuple[float, float]:
-    """(响度 LUFS, 真峰值 dBTP)"""
-    import json as _json
-    text = _ffmpeg(ffmpeg, ["-i", path, "-af", f"volume={pre_gain:.8f},loudnorm=print_format=json", "-f", "null", "-"], "测量响度")
-    data = _json.loads(text[text.rindex("{"):text.rindex("}") + 1])
-    return float(data["input_i"]), float(data["input_tp"])
+    """(响度 LUFS, 真峰值 dBTP)。用 ebur128 测：结果和 loudnorm 一样，但快约 5 倍。"""
+    text = _ffmpeg(ffmpeg, ["-nostats", "-i", path, "-af", f"volume={pre_gain:.8f},ebur128=peak=true", "-f", "null", "-"], "测量响度")
+    summary = text[text.rfind("Summary:"):]
+    loud = re.search(r"I:\s*(-?[\d.]+|-inf)\s*LUFS", summary)
+    peak = re.search(r"Peak:\s*(-?[\d.]+|-inf)\s*dBFS", summary)
+    value = lambda m: -99.0 if not m or m.group(1) == "-inf" else float(m.group(1))
+    return value(loud), value(peak)
 
 
-def _match_loudness(ffmpeg: str, session: dict, mixed: str) -> list[str]:
-    """让导出的响度和原视频一样（大家会下意识觉得更响的更好听，这样对比才公平）。
-    需要时用前瞻限幅器压住峰值，但限幅最多 4 dB——宁可稍微小声一点，也不压扁、不削波。"""
-    if "orig_loudness" not in session:
-        session["orig_loudness"] = _loudness(ffmpeg, session["original"], session["restore"])
-    target, _ = session["orig_loudness"]
-    current, peak = _loudness(ffmpeg, mixed)
+def _gain_to(target: float, current: float, peak: float) -> list[str]:
+    """整体调到目标响度（纯音量，不压缩动态）；需要时用前瞻限幅器压住峰值，但限幅最多 4 dB——宁可稍微小声一点，也不压扁、不削波。"""
     if not (-70 < target < 0 and -70 < current < 0):
         return []
     gain = target - current
@@ -1027,6 +1086,14 @@ def _match_loudness(ffmpeg: str, session: dict, mixed: str) -> list[str]:
     else:
         chain.append("alimiter=limit=0.998:attack=1:release=50:level=false")  # 只防意外削波
     return chain
+
+
+def _match_loudness(ffmpeg: str, session: dict, mixed: str) -> list[str]:
+    """让导出的响度和原视频一样（大家会下意识觉得更响的更好听，这样对比才公平）。"""
+    if "orig_loudness" not in session:
+        session["orig_loudness"] = _loudness(ffmpeg, session["original"], session["restore"])
+    target, _ = session["orig_loudness"]
+    return _gain_to(target, *_loudness(ffmpeg, mixed))
 
 
 def render_preview(ffmpeg: str, session: dict, settings: dict) -> dict:

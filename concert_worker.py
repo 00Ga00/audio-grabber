@@ -116,6 +116,9 @@ def make_separator(models_dir: str, out_dir: str):
         use_soundfile=True,
         # 显卡上用半精度（autocast）：通常快 1.5–2 倍；可在“设置…”里关掉（关掉后和旧版结果逐位一致）
         use_autocast=bool(FAST["on"] and torch.cuda.is_available()),
+        # 重叠次数：模型默认 4（每个采样算 4 遍再平均）；2 = 快约 1.9 倍，结果差别约 −38 dB
+        mdxc_params={"segment_size": 256, "override_model_segment_size": False, "batch_size": None,
+                     "overlap": FAST.get("overlap"), "pitch_shift": 0},
     )
 
 
@@ -543,6 +546,7 @@ def main() -> int:
     parser.add_argument("--analysis")
     parser.add_argument("--reference", help="只分析参考曲的频谱")
     parser.add_argument("--low-vram", action="store_true", help="显存小：一次只放一个模型")
+    parser.add_argument("--overlap", type=int, default=None, help="分离模型的重叠次数（默认用模型自己的设置）")
     parser.add_argument("--no-fast", action="store_true", help="不用半精度（结果和旧版逐位一致，速度慢一些）")
     args = parser.parse_args()
     try:
@@ -552,6 +556,7 @@ def main() -> int:
     try:
         FAST["on"] = not args.no_fast
         FAST["low_vram"] = args.low_vram
+        FAST["overlap"] = args.overlap
         _install_hooks()
         if args.reference:
             reference_levels(args.reference)

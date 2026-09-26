@@ -416,6 +416,7 @@ def main() -> int:
     parser.add_argument("--size", default="large")
     parser.add_argument("--beam", type=int, default=4)
     parser.add_argument("--parallel", type=int, default=1)
+    parser.add_argument("--overlap", type=int, default=None)
     parser.add_argument("--instruments", default="")
     args = parser.parse_args()
     try:
@@ -428,6 +429,8 @@ def main() -> int:
         elif args.notate:
             notate(args.notate, args.plan, args.out)
         elif args.stems:
+            import concert_worker as cw
+            cw.FAST["overlap"] = args.overlap
             stems(args.stems, args.out, args.models)
         return 0
     except Exception as error:

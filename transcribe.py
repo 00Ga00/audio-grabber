@@ -213,5 +213,6 @@ def run_stems(source: str, ffmpeg: str, clean: bool, log=lambda _m: None, progre
         elif event.get("type") == "download":
             progress(0.35, f"下载模型：{event.get('done', 0) / 1e6:.0f} / {max(event.get('total', 1), 1) / 1e6:.0f} MB")
 
-    concert.run_worker(["--stems", audio, "--out", str(out), "--models", str(concert.MODELS_DIR)], on_event, script=WORKER)
+    concert.run_worker(["--stems", audio, "--out", str(out), "--models", str(concert.MODELS_DIR)] + concert._overlap_args(),
+                       on_event, script=WORKER)
     return json.loads(out.read_text(encoding="utf-8"))
