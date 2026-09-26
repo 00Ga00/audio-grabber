@@ -47,6 +47,47 @@ GROUPS = {
 
 # ------------------------------------------------------------------ 扒谱
 
+def check_model_access(size: str) -> None:
+    """在耗时的音频清理前，确认所选权重已缓存或当前账号有权下载。"""
+    from huggingface_hub import get_hf_file_metadata, hf_hub_url, try_to_load_from_cache
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
+
+    repo = f"MuScriptor/muscriptor-{size}"
+    url = f"https://huggingface.co/{repo}"
+    label = {"small": "小模型", "medium": "快速（中模型）", "large": "大模型"}.get(size, size)
+    cached = try_to_load_from_cache(repo, "model.safetensors")
+    if isinstance(cached, (str, os.PathLike)) and os.path.isfile(cached):
+        emit("model_access", ok=True, cached=True)
+    else:
+        try:
+            get_hf_file_metadata(hf_hub_url(repo, "model.safetensors"),
+                                 token=os.environ.get("HF_TOKEN"), timeout=20)
+        except GatedRepoError:   # 要放在 RepositoryNotFoundError 前面（它是子类）
+            emit("model_access", ok=False, message=(
+                f"当前 Hugging Face 账号没有“{label}”扒谱模型的访问许可。"
+                f"请用设置里令牌对应的账号登录 {url}，阅读并接受模型条件，然后重试。"))
+        except RepositoryNotFoundError:
+            emit("model_access", ok=False, message=(
+                f"找不到“{label}”扒谱模型（{repo}）。可能是令牌没有读取权限，"
+                "请在设置里换一个 Read 类型的 Hugging Face 令牌再试。"))
+        except HfHubHTTPError as error:
+            status = getattr(getattr(error, "response", None), "status_code", None)
+            if status == 401:
+                emit("model_access", ok=False, message=(
+                    "Hugging Face 令牌无效（可能过期、被删除或复制不完整）。"
+                    "请到 huggingface.co/settings/tokens 新建一个 Read 令牌，在设置里重新填写。"))
+            else:
+                emit("model_access", ok=False, message=(
+                    f"Hugging Face 返回错误（{status or type(error).__name__}），暂时无法验证“{label}”扒谱模型的下载权限，请稍后重试。"))
+        except Exception as error:
+            emit("model_access", ok=False, message=(
+                f"暂时无法验证“{label}”扒谱模型的下载权限（{type(error).__name__}）。"
+                "请检查网络，或先使用已下载的模型。"))
+        else:
+            emit("model_access", ok=True, cached=False)
+    emit("done", output=url)
+
+
 def transcribe(path: str, out: str, size: str, beam: int, instruments: list[str], parallel: int = 1) -> None:
     import torch
     from muscriptor.events import ProgressEvent
@@ -408,6 +449,7 @@ def stems(path: str, out_json: str, models_dir: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--transcribe")
+    parser.add_argument("--check-model")
     parser.add_argument("--notate")
     parser.add_argument("--stems")
     parser.add_argument("--plan")
@@ -424,7 +466,9 @@ def main() -> int:
     except Exception:
         pass
     try:
-        if args.transcribe:
+        if args.check_model:
+            check_model_access(args.check_model)
+        elif args.transcribe:
             transcribe(args.transcribe, args.out, args.size, args.beam, [i for i in args.instruments.split(",") if i], args.parallel)
         elif args.notate:
             notate(args.notate, args.plan, args.out)

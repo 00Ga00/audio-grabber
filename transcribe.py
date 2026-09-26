@@ -126,6 +126,15 @@ def prepare_audio(source: str, ffmpeg: str, clean: bool, folder: Path, log, prog
     return target
 
 
+def model_cached(size: str) -> bool:
+    """扒谱模型是否已在 Hugging Face 缓存里（只看文件，不联网、不启动 AI 进程）。"""
+    import glob
+    hub = os.environ.get("HF_HUB_CACHE") or os.path.join(
+        os.environ.get("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface"), "hub")
+    pattern = os.path.join(hub, f"models--MuScriptor--muscriptor-{size}", "snapshots", "*", "model.safetensors")
+    return any(os.path.isfile(path) and os.path.getsize(path) > 1_000_000 for path in glob.glob(pattern))
+
+
 def run_transcription(source: str, ffmpeg: str, size_label: str, instruments: list[str], clean: bool,
                       log=lambda _m: None, progress=lambda _f, _s="": None,
                       start: float | None = None, length: float | None = None) -> dict:
@@ -134,9 +143,16 @@ def run_transcription(source: str, ffmpeg: str, size_label: str, instruments: li
     if not get_token():
         raise RuntimeError("还没有设置 Hugging Face 授权（扒谱模型需要）。请先点“Hugging Face 授权…”。")
     concert._RUNNING["cancelled"] = False
+    size, beam, parallel = SIZES.get(size_label, ("large", 1, 1))
+    if not model_cached(size):   # 已经下载过就不用联网检查，也不用多启动一次进程
+        access = {}
+        concert.run_worker(["--check-model", size, "--out", str(HERE)],
+                           lambda event: access.update(event) if event.get("type") == "model_access" else None,
+                           script=WORKER)
+        if not access.get("ok"):
+            raise RuntimeError(access.get("message") or "无法确认扒谱模型是否可用。")
     folder = _session("score")
     audio = prepare_audio(source, ffmpeg, clean, folder, log, progress, start, length)
-    size, beam, parallel = SIZES.get(size_label, ("large", 1, 1))
     base = 0.35 if clean else 0.02
     found = {}
 
