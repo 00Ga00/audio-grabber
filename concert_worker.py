@@ -150,15 +150,20 @@ class ModelPool:
             return separate_file(self.get(model), path, keep)
 
 
-def download(models_dir: str) -> None:
+def download(models_dir: str, steps: list[str] | None = None) -> None:
+    """按安装的版本只下载要用的模型（配置低的电脑不下大模型）。steps 为空 = 全部。"""
+    steps = steps or ["crowd", "denoise", "split", "dereverb", "restore"]
     os.makedirs(models_dir, exist_ok=True)
+    table = dict((k, v[0]) for k, v in MODELS.items())
+    table.update(split=VOCAL_MODEL[0], dereverb=DEREVERB_MODEL[0])
+    models = [table[k] for k in steps if k in table]
     with tempfile.TemporaryDirectory() as tmp:
         sep = make_separator(models_dir, tmp)
-        models = [model for model, _ in MODELS.values()] + [VOCAL_MODEL[0], DEREVERB_MODEL[0]]
         for i, model in enumerate(models, 1):
-            emit("progress", stage=f"下载模型 {i}/{len(models)}", fraction=(i - 1) / len(models))
+            emit("progress", stage=f"下载模型 {i}/{len(models)}", fraction=(i - 1) / max(len(models), 1))
             sep.download_model_files(model)
-    download_apollo(models_dir)
+    if "restore" in steps:
+        download_apollo(models_dir)
     emit("done", output=models_dir)
 
 
@@ -530,6 +535,7 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--download", action="store_true")
+    parser.add_argument("--download-steps", help="只下载这些步骤的模型（逗号分隔）")
     parser.add_argument("--input")
     parser.add_argument("--output")
     parser.add_argument("--models", required=True)
@@ -550,7 +556,7 @@ def main() -> int:
         if args.reference:
             reference_levels(args.reference)
         elif args.download:
-            download(args.models)
+            download(args.models, [x for x in (args.download_steps or "").split(",") if x] or None)
         else:
             steps = [s for s in args.steps.split(",") if s in STEP_NAMES]
             if not steps:

@@ -1089,18 +1089,71 @@ def main() -> None:
             c_reexport_button.configure(state="disabled")
 
     def install_concert_clicked():
+        """先看电脑配置，再选安装哪个版本：配置低的电脑不下载用不上的大模型。"""
         if state.get("concert_busy"):
             return
-        if not messagebox.askyesno(APP_TITLE, "将下载并安装演唱会降噪组件（约 5 GB，需要联网，可能要 10～40 分钟）。\n安装完成后可以离线使用。现在开始吗？"):
+        info = hw["info"]
+        if info.get("pending"):
+            info = hardware.detect()
+            hw["info"] = info
+        gpu = bool(info.get("nvidia"))
+        recommended = hardware.recommended_edition(info)
+        lock = hardware.edition_locks(info, bool(prefs.get("unlocked", False)))
+        current = concert.installed_edition()
+        order = list(concert.EDITIONS)
+
+        win = tk.Toplevel(root)
+        win.title("安装演唱会降噪组件")
+        win.transient(root)
+        frame = ttk.Frame(win, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="选择安装版本", font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(frame, text=hardware.describe(info) + "\n" + hardware.TIER_NAMES.get(info.get("tier"), ""),
+                  foreground="#5b6678", justify="left", wraplength=int(520 * scale)).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 10))
+        choice = tk.StringVar(value=current if current and order.index(current) > order.index(recommended) else recommended)
+        for row, key in enumerate(order, start=2):
+            name, steps, note = concert.EDITIONS[key]
+            size = concert.edition_size_gb(key, gpu)
+            tags = []
+            if key == recommended:
+                tags.append("推荐")
+            if key == current:
+                tags.append("已安装")
+            label = f"{name}（{'需下载约 ' + str(size) + ' GB' if size > 0.05 else '无需下载'}）" + ("  · " + " · ".join(tags) if tags else "")
+            button = ttk.Radiobutton(frame, text=label, value=key, variable=choice)
+            button.grid(row=row * 2, column=0, sticky="w", pady=(6, 0))
+            ttk.Label(frame, text="    " + (lock[key] if key in lock else note), foreground="#b0413e" if key in lock else "#5b6678").grid(
+                row=row * 2 + 1, column=0, sticky="w")
+            if key in lock:
+                button.configure(state="disabled")
+        repair = tk.BooleanVar(value=False)
+        if current:
+            ttk.Checkbutton(frame, text="同时重装运行环境（组件出错时用）", variable=repair).grid(row=20, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(frame, text="以后需要别的功能时，可以回来升级；勾选没下载的功能时也会自动补下。安装完成后可以离线使用。",
+                  foreground="#5b6678", wraplength=int(520 * scale), justify="left").grid(row=21, column=0, sticky="w", pady=(10, 0))
+        picked = {}
+
+        def go():
+            picked["edition"] = choice.get()
+            win.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=22, column=0, sticky="e", pady=(12, 0))
+        ttk.Button(buttons, text="取消", command=win.destroy).pack(side="right")
+        ttk.Button(buttons, text="开始安装", style="Primary.TButton", command=go).pack(side="right", padx=(0, 8))
+        win.grab_set()
+        root.wait_window(win)
+        if "edition" not in picked:
             return
+        edition, redo = picked["edition"], bool(repair.get())
         set_concert_busy(True)
         c_status.set("正在安装演唱会降噪组件……")
         c_progress.configure(mode="indeterminate"); c_progress.start(12)
 
         def worker():
-            concert.TRANSFER.begin("安装演唱会降噪组件")
+            concert.TRANSFER.begin("安装演唱会降噪组件（" + concert.EDITIONS[edition][0] + "）")
             try:
-                concert.install_ai(lambda text: (concert.TRANSFER.note(text), events.put(("concert_log", text))))
+                concert.install_ai(lambda text: (concert.TRANSFER.note(text), events.put(("concert_log", text))), edition, redo)
                 events.put(("concert_install_done", None)); concert.TRANSFER.end("演唱会降噪组件安装完成")
             except Exception as error:
                 events.put(("concert_install_error", str(error))); concert.TRANSFER.end("安装失败")
@@ -1799,7 +1852,8 @@ def main() -> None:
     ttk.Button(g_card, text="保存", style="Primary.TButton", command=save_prefs).grid(row=16, column=0, sticky="w", pady=(10, 0))
 
     def refresh_settings():
-        g_rows["concert"].configure(text="已安装" if concert.ai_available() else "未安装（约 5 GB）")
+        edition = concert.installed_edition()
+        g_rows["concert"].configure(text=f"已安装（{concert.EDITIONS[edition][0]}）" if edition else "未安装（按电脑配置选版本，约 2–7 GB）")
         g_rows["score"].configure(text=("已安装" if transcribe.available() else "未安装（约 300 MB + 模型 1.4 GB）") + " · " +
                                   ("授权已设置" if transcribe.get_token() else "需要 Hugging Face 授权"))
         g_rows["voice"].configure(text="已安装" if ai_available() else "未安装（约 26 MB）")

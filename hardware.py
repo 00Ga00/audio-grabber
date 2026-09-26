@@ -212,3 +212,17 @@ def fmt_minutes(sec: float) -> str:
     if sec < 5400:
         return f"约 {sec / 60:.0f} 分钟"
     return f"约 {sec / 3600:.1f} 小时"
+
+
+# 按档位推荐的安装版本；低配电脑锁住带大模型的版本（解除限制后可选）
+EDITION_FOR = {"strong": "full", "medium": "standard", "weak": "lite"}
+EDITION_LOCKS = {"weak": {"standard": "没有可用的 NVIDIA 显卡，用不上人声分离和音质修复", "full": "没有可用的 NVIDIA 显卡"},
+                 "medium": {}, "strong": {}}
+
+
+def recommended_edition(info: dict) -> str:
+    return EDITION_FOR.get(info.get("tier", "weak"), "lite")
+
+
+def edition_locks(info: dict, unlocked: bool = False) -> dict:
+    return {} if unlocked else dict(EDITION_LOCKS.get(info.get("tier", "weak"), {}))

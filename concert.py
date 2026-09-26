@@ -266,8 +266,51 @@ def _verify_imports(py: list[str], log) -> None:
     raise RuntimeError("AI 组件自检多次失败。")
 
 
-def install_ai(log=lambda _message: None) -> None:
-    """安装演唱会降噪的 AI 环境和模型（首次约 5 GB，之后不需要联网）。"""
+# 安装版本：配置低的电脑不下载用不上的大模型（以后想要可以在“设置”里升级，或勾选时自动补下）
+EDITIONS = {
+    "lite": ("精简版", ["crowd", "denoise"], "去观众声 + 去底噪；适合没有 NVIDIA 显卡的电脑"),
+    "standard": ("标准版", ["crowd", "denoise", "split", "restore"], "再加人声/伴奏分离、音质修复；适合 4–8 GB 显存"),
+    "full": ("完整版", ["crowd", "denoise", "split", "restore", "dereverb"], "再加去混响（现场感）；适合 8 GB 以上显存"),
+}
+MODEL_MB = {"crowd": 913, "denoise": 913, "split": 913, "dereverb": 913, "restore": 147}
+MODEL_FILES = {"crowd": "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt",
+               "denoise": "denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt",
+               "split": "vocals_mel_band_roformer.ckpt",
+               "dereverb": "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
+               "restore": "apollo_universal_model.ckpt"}
+EDITION_FILE = AI_ENV / "edition.txt"
+
+
+def edition_size_gb(edition: str, gpu: bool) -> float:
+    """大约要下载多少（显卡版 PyTorch 约 2.6 GB，CPU 版约 0.3 GB，其他依赖约 0.4 GB）。"""
+    models = sum(MODEL_MB[k] for k in EDITIONS[edition][1] if not model_present(k)) / 1024
+    runtime = 0.0 if ai_available() else (2.6 if gpu else 0.3) + 0.4
+    return round(runtime + models, 1)
+
+
+def model_present(step: str) -> bool:
+    path = MODELS_DIR / MODEL_FILES[step]
+    return path.is_file() and path.stat().st_size > 10_000_000
+
+
+def installed_edition() -> str | None:
+    if not ai_available():
+        return None
+    try:
+        name = EDITION_FILE.read_text(encoding="utf-8").strip()
+        if name in EDITIONS:
+            return name
+    except OSError:
+        pass
+    # 旧版本装的：看实际下了哪些模型
+    return next((e for e in ("full", "standard", "lite") if all(model_present(k) for k in EDITIONS[e][1])), "lite")
+
+
+def install_ai(log=lambda _message: None, edition: str = "standard", repair: bool = False) -> None:
+    """按版本安装演唱会降噪的 AI 环境和模型（之后不需要联网）。已装好时只补下缺的模型（升级版本）。"""
+    if ai_available() and not repair:
+        _download_edition(edition, log)
+        return
     base = _find_ai_base_python(log)
     if not ai_python().is_file():
         log("正在创建 AI 独立环境……")
@@ -282,12 +325,21 @@ def install_ai(log=lambda _message: None) -> None:
         log("检测到 NVIDIA 显卡。")
         _ensure_cuda_torch(py, log)
     else:
-        log("没有检测到 NVIDIA 显卡，使用 CPU 版 PyTorch。")
+        log("没有检测到 NVIDIA 显卡，使用 CPU 版 PyTorch（小很多）。")
     _verify_imports(py, log)
-    log("正在下载 AI 模型（去观众声、去底噪、人声分离、音质修复，共约 2.9 GB）……")
-    run_worker(["--download", "--models", str(MODELS_DIR)], lambda event: log(event.get("stage", "")) if event.get("type") == "progress" else None)
+    _download_edition(edition, log)
+
+
+def _download_edition(edition: str, log) -> None:
+    name, steps, _ = EDITIONS[edition]
+    missing = [k for k in steps if not model_present(k)]
+    if missing:
+        log(f"正在下载{name}的模型（{len(missing)} 个，约 {sum(MODEL_MB[k] for k in missing) / 1024:.1f} GB）……")
+        run_worker(["--download", "--models", str(MODELS_DIR), "--download-steps", ",".join(missing)],
+                   lambda event: log(event.get("stage", "")) if event.get("type") == "progress" else None)
     READY_FLAG.write_text("ok", encoding="utf-8")
-    log("演唱会降噪组件安装完成。")
+    EDITION_FILE.write_text(edition, encoding="utf-8")
+    log(f"演唱会降噪组件（{name}）安装完成。")
 
 
 # ----------------------------------------------------------------- worker

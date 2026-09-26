@@ -294,6 +294,11 @@ AI 组件|AI components|KI-Komponenten
 第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
 录音组件|Recorder|Rekorder
 ● 有新版本|● Update available|● Update verfügbar
+选择安装版本|Choose an edition|Version wählen
+安装演唱会降噪组件|Install concert cleanup|Konzert-Bereinigung installieren
+同时重装运行环境（组件出错时用）|Also reinstall the runtime (use if something is broken)|Laufzeitumgebung neu installieren (bei Fehlern)
+以后需要别的功能时，可以回来升级；勾选没下载的功能时也会自动补下。安装完成后可以离线使用。|You can upgrade later; features that are not downloaded yet are fetched automatically when you tick them. Works offline once installed.|Später erweiterbar; fehlende Funktionen werden beim Ankreuzen automatisch geladen. Danach offline nutzbar.
+开始安装|Install|Installieren
 按电脑配置推荐|Recommend for this PC|Für diesen PC empfehlen
 已按电脑配置选好处理步骤|Steps chosen for this computer|Schritte für diesen Computer gewählt
 电脑配置|Computer|Computer
@@ -376,6 +381,19 @@ AI 处理完成|AI finished|KI fertig
 识别到调性：|Key detected: |Erkannte Tonart: 
 （活动）| (activity)| (Aktivität)
 版本 |Version |Version
+去观众声 + 去底噪；适合没有 NVIDIA 显卡的电脑|crowd + noise removal; for PCs without an NVIDIA GPU|Publikum + Rauschen entfernen; für PCs ohne NVIDIA-GPU
+再加人声/伴奏分离、音质修复；适合 4–8 GB 显存|adds vocal/backing split and restoration; for 4–8 GB VRAM|plus Gesang/Begleitung-Trennung und Restaurierung; für 4–8 GB VRAM
+再加去混响（现场感）；适合 8 GB 以上显存|adds de-reverb (room control); for 8 GB+ VRAM|plus Enthallung (Raumregler); ab 8 GB VRAM
+没有可用的 NVIDIA 显卡，用不上人声分离和音质修复|no usable NVIDIA GPU – vocal split and restoration would be too slow|keine nutzbare NVIDIA-GPU – Trennung und Restaurierung wären zu langsam
+没有可用的 NVIDIA 显卡|no usable NVIDIA GPU|keine nutzbare NVIDIA-GPU
+未安装（按电脑配置选版本，约 2–7 GB）|Not installed (edition chosen by your PC, about 2–7 GB)|Nicht installiert (Version je nach PC, ca. 2–7 GB)
+需下载约 |download about |Download ca. 
+无需下载|nothing to download|kein Download
+精简版|Lite|Lite
+标准版|Standard|Standard
+完整版|Full|Vollständig
+已安装|installed|installiert
+推荐|recommended|empfohlen
 推荐组合：|Recommended: |Empfohlen: 
 显卡够强：全部打开（去混响后可以调现场感）；显卡半精度加速|strong GPU: everything on (de-reverb enables the room slider); half-precision GPU|starke GPU: alles an (Enthallung ermöglicht den Raumregler); GPU-Halbpräzision
 显存较小：不做去混响（多一个大模型、最占显存），其余全开；一次只放一个模型|little GPU memory: no de-reverb (one more large model), everything else on; one model at a time|wenig Grafikspeicher: keine Enthallung (ein weiteres großes Modell), sonst alles an; ein Modell zur Zeit
