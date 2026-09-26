@@ -8,6 +8,7 @@ import importlib.util
 import os
 import queue
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -148,12 +149,14 @@ def main() -> None:
 
     clip_row = ttk.Frame(download_card, style="Card.TFrame")
     clip_row.grid(row=4, column=0, columnspan=3, sticky="w", pady=5)
+    d_send = tk.BooleanVar(value=False)
     ttk.Checkbutton(clip_row, text="只保存一段", variable=d_clip).pack(side="left")
     ttk.Label(clip_row, text="从", style="Card.TLabel").pack(side="left", padx=(15, 4))
     ttk.Entry(clip_row, textvariable=d_start, width=10).pack(side="left")
     ttk.Label(clip_row, text="到", style="Card.TLabel").pack(side="left", padx=(10, 4))
     ttk.Entry(clip_row, textvariable=d_end, width=10).pack(side="left")
     ttk.Label(clip_row, text="例：1:30；结束留空=到结尾", style="Muted.Card.TLabel").pack(side="left", padx=10)
+    ttk.Checkbutton(clip_row, text="下载完直接送去“演唱会降噪”", variable=d_send).pack(side="left", padx=(10, 0))
 
     d_buttons = ttk.Frame(download_card, style="Card.TFrame")
     d_buttons.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(12, 6))
@@ -198,7 +201,8 @@ def main() -> None:
         except ValueError as error:
             messagebox.showwarning(APP_TITLE, str(error))
             return
-        options = dict(url=url, outdir=d_dir.get().strip(), format=d_format.get(), quality=d_quality.get(), start=start_at, end=end_at, login=d_login.get(), cookie_file=d_cookie.get())
+        # 要送去降噪时用原始格式，避免多一次有损压缩
+        options = dict(url=url, outdir=d_dir.get().strip(), format="原始格式（不转码）" if d_send.get() else d_format.get(), quality=d_quality.get(), start=start_at, end=end_at, login=d_login.get(), cookie_file=d_cookie.get())
         core.save_settings({"outdir": options["outdir"], "format": options["format"], "quality": options["quality"], "login": options["login"]})
         state["download_busy"] = True
         cancel_download.clear()
@@ -517,21 +521,33 @@ def main() -> None:
     c_last = {"path": None, "preview": None}
 
     ttk.Label(c_card, text="演唱会降噪", style="Card.TLabel", font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
-    ttk.Label(c_card, text="从现场视频里取出声音，用音乐专用 AI 去掉观众尖叫、鼓掌和底噪，尽量保持原声", style="Muted.Card.TLabel").grid(row=1, column=0, columnspan=3, sticky="w", pady=(1, 12))
+    ttk.Label(c_card, text="从现场视频里取出声音，用音乐专用 AI 去掉观众尖叫、鼓掌和底噪，尽量保持原声", style="Muted.Card.TLabel").grid(row=1, column=0, columnspan=3, sticky="w", pady=(1, 6))
     ttk.Label(c_card, text="视频/音频", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=5)
     ttk.Entry(c_card, textvariable=c_input).grid(row=2, column=1, sticky="ew", padx=8)
 
     def choose_concert_file():
         chosen = filedialog.askopenfilename(filetypes=concert.MEDIA_TYPES)
-        if not chosen:
-            return
+        if chosen:
+            load_concert_file(chosen)
+
+    def load_concert_file(chosen):
         c_input.set(chosen)
+        c_line.update(data=None, duration=0.0)
         ffmpeg = core.find_ffmpeg()
+
+        def timeline_worker():
+            try:
+                events.put(("concert_timeline", (chosen, concert.quick_timeline(ffmpeg, chosen))))
+            except Exception:
+                pass
+
+        threading.Thread(target=timeline_worker, daemon=True).start()
         try:
             info = concert.probe(ffmpeg, chosen)
             minutes = info["duration"] / 60
             c_status.set(f"时长 {minutes:.1f} 分钟" + ("（含画面，可生成降噪后的视频）" if info["has_video"] else "（纯音频）"))
             c_last["duration"] = info["duration"]
+            c_line["duration"] = info["duration"]
             # 试听点放在中间（演唱会中段通常最有代表性），并保证后面还有 30 秒
             point = int(max(0.0, min(info["duration"] / 2, info["duration"] - 30)))
             c_preview_at.set(f"{point // 3600}:{point % 3600 // 60:02d}:{point % 60:02d}" if point >= 3600 else f"{point // 60}:{point % 60:02d}")
@@ -551,14 +567,19 @@ def main() -> None:
     c_opts2 = ttk.Frame(c_card, style="Card.TFrame")
     c_opts2.grid(row=5, column=0, columnspan=3, sticky="w", pady=(0, 6))
     ttk.Checkbutton(c_opts2, text="同时生成视频（画面不重新压缩）", variable=c_video).pack(side="left")
-    ttk.Checkbutton(c_opts2, text="统一音量（会轻微改变动态）", variable=c_normalize).pack(side="left", padx=(14, 0))
+    c_loudness = tk.StringVar(value="和原视频一样响（推荐）")
+    ttk.Label(c_opts2, text="音量", style="Card.TLabel").pack(side="left", padx=(14, 4))
+    ttk.Combobox(c_opts2, textvariable=c_loudness, values=list(concert.LOUDNESS_MODES), state="readonly", width=24).pack(side="left")
     ttk.Checkbutton(c_opts, text="分离人声和伴奏（分开调）", variable=c_split).pack(side="left", padx=(14, 0))
-    ttk.Checkbutton(c_opts2, text="另存人声、伴奏分轨（可导入 Cubase 等软件）", variable=c_stems).pack(side="left", padx=(14, 0))
+    ttk.Checkbutton(c_opts2, text="另存人声、伴奏分轨", variable=c_stems).pack(side="left", padx=(14, 0))
 
     # ---- 调音：滑块 + 频谱可视化
     presets = concert.load_presets()
     start_values = dict(concert.DEFAULT_SETTINGS, **{k: v for k, v in presets.get("_last", {}).items() if k in concert.DEFAULT_SETTINGS})
-    c_normalize.set(bool(start_values.get("normalize", False)))
+    prefs = presets.setdefault("_prefs", {})
+    concert.set_temp_root(prefs.get("temp_dir") or None)
+    c_fast = tk.BooleanVar(value=bool(prefs.get("fast", True)))
+    loud_names = {v: k for k, v in concert.LOUDNESS_MODES.items()}
     SLIDER_PAGES = [
         ("整体", [  # 键, 名称, 最小, 最大, 显示方式
             ("strength", "降噪强度", 0.5, 1.0, "pct"),
@@ -574,6 +595,7 @@ def main() -> None:
             ("inst_bass", "伴奏低频（轰）", -12.0, 6.0, "db"),
             ("inst_harsh", "伴奏刺耳（2–5 kHz）", -10.0, 4.0, "db"),
             ("inst_treble", "伴奏高频", -10.0, 6.0, "db"),
+            ("inst_soften", "伴奏动态柔化", 0.0, 1.0, "pct"),
         ]),
     ]
     SLIDERS = [item for _, items in SLIDER_PAGES for item in items]
@@ -593,7 +615,7 @@ def main() -> None:
 
     def current_settings():
         values = {key: round(var.get(), 3) for key, var in c_vars.items()}
-        values["normalize"] = bool(c_normalize.get())
+        values["loudness"] = concert.LOUDNESS_MODES.get(c_loudness.get(), "match")
         return values
 
     for page_name, items in SLIDER_PAGES:
@@ -609,11 +631,11 @@ def main() -> None:
             label.grid(row=row, column=2, sticky="w")
             c_value_labels[key] = label
         if page_name.startswith("人声"):
-            ttk.Label(page, text="只影响伴奏，人声不变；需勾选“分离人声和伴奏”", style="Muted.Card.TLabel").grid(
+            ttk.Label(page, text="只影响伴奏，人声不变（需勾选“分离人声和伴奏”）", style="Muted.Card.TLabel").grid(
                 row=len(items), column=0, columnspan=3, sticky="w", pady=(2, 0))
 
     c_preset_row = ttk.Frame(c_sliders, style="Card.TFrame")
-    c_preset_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    c_preset_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(3, 0))
     c_preset = tk.StringVar(value="")
     c_preset_box = ttk.Combobox(c_preset_row, textvariable=c_preset, state="readonly", width=14)
     c_preset_box.pack(side="left")
@@ -626,8 +648,8 @@ def main() -> None:
         for key, var in c_vars.items():
             if key in values:
                 var.set(float(values[key]))
-        if "normalize" in values:
-            c_normalize.set(bool(values["normalize"]))
+        if values.get("loudness") in loud_names:
+            c_loudness.set(loud_names[values["loudness"]])
         on_setting_change(None)
 
     def preset_chosen(_event=None):
@@ -658,8 +680,71 @@ def main() -> None:
     ttk.Button(c_preset_row, text="恢复默认", command=lambda: (c_preset.set("默认"), apply_values(concert.DEFAULT_SETTINGS))).pack(side="left", padx=(4, 0))
     refresh_presets()
 
-    c_canvas = tk.Canvas(c_tune, height=int(165 * scale), background="#ffffff", highlightthickness=1, highlightbackground="#dde3ea")
-    c_canvas.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
+    c_right = ttk.Frame(c_tune, style="Card.TFrame")
+    c_right.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
+    c_right.columnconfigure(0, weight=1)
+    c_canvas = tk.Canvas(c_right, height=int(128 * scale), background="#ffffff", highlightthickness=1, highlightbackground="#dde3ea")
+    c_canvas.grid(row=0, column=0, sticky="nsew")
+    c_timeline = tk.Canvas(c_right, height=int(44 * scale), background="#ffffff", highlightthickness=1, highlightbackground="#dde3ea", cursor="hand2")
+    c_timeline.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+    c_line = {"data": None, "duration": 0.0}
+
+    def draw_timeline(_event=None):
+        cv = c_timeline
+        cv.delete("all")
+        w, h = max(cv.winfo_width(), 200), max(cv.winfo_height(), 30)
+        data, duration = c_line["data"], c_line["duration"] or 0.0
+        if not data or not data.get("loud"):
+            cv.create_text(w / 2, h / 2, text="时间轴：选好文件后显示每一秒的响度（灰）和刺耳度（红）；点一下就从那里试听",
+                           fill="#8a94a3", font=("Microsoft YaHei UI", 8))
+            return
+        loud, harsh = data["loud"], data.get("harsh") or []
+        vocal = data.get("vocal")
+        count = len(loud)
+        top_db = max(loud) if loud else 0
+        bar = (w - 4) / max(count, 1)
+        for i, value in enumerate(loud):
+            level = max(0.0, min(1.0, (value - (top_db - 30)) / 30))
+            x = 2 + i * bar
+            cv.create_rectangle(x, h - 2 - level * (h - 6), x + max(bar, 1), h - 2, fill="#c5ccd6", width=0)
+            if i < len(harsh) and value > -90:
+                # 刺耳度 = 2–5 kHz 比整体多多少：越红越刺耳
+                ratio = max(0.0, min(1.0, (harsh[i] - value + 18) / 12))
+                if ratio > 0.05:
+                    cv.create_rectangle(x, h - 2 - level * (h - 6) * ratio, x + max(bar, 1), h - 2, fill="#e05a47", width=0, stipple="gray50")
+        if vocal and len(vocal) >= count // 2:
+            pts = []
+            vmax = max(vocal)
+            for i, value in enumerate(vocal[:count]):
+                pts += [2 + (i + 0.5) * bar, h - 2 - max(0.0, min(1.0, (value - (vmax - 30)) / 30)) * (h - 6)]
+            if len(pts) >= 4:
+                cv.create_line(*pts, fill="#2eaa6a", width=1.5, smooth=True)
+        try:
+            start = core.parse_time(c_preview_at.get()) or 0.0
+        except ValueError:
+            start = 0.0
+        if duration:
+            x0, x1 = 2 + start / duration * (w - 4), 2 + min(duration, start + 30) / duration * (w - 4)
+            cv.create_rectangle(x0, 1, x1, h - 1, outline="#2f6fdf", width=2)
+        legend = "灰=响度 红=刺耳" + (" 绿=人声" if vocal else "") + " 蓝框=试听段 · 点击跳转"
+        item = cv.create_text(w - 5, 7, text=legend, anchor="e", fill="#4a5563", font=("Microsoft YaHei UI", 7))
+        box = cv.bbox(item)
+        if box:
+            cv.tag_lower(cv.create_rectangle(box[0] - 3, box[1] - 1, box[2] + 2, box[3] + 1, fill="#ffffff", outline=""), item)
+
+    def timeline_click(event):
+        duration = c_line["duration"]
+        if not duration:
+            return
+        w = max(c_timeline.winfo_width(), 200)
+        t = max(0.0, min(duration - 30, (event.x - 2) / (w - 4) * duration - 15)) if duration > 30 else 0.0
+        t = int(max(0.0, t))
+        c_preview_at.set(f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}" if t >= 3600 else f"{t // 60}:{t % 60:02d}")
+        draw_timeline()
+
+    c_timeline.bind("<Configure>", draw_timeline)
+    c_timeline.bind("<Button-1>", timeline_click)
+    c_preview_at.trace_add("write", lambda *_: draw_timeline())
 
     c_session = {"preview": None, "full": None, "dirty": True}
 
@@ -740,7 +825,9 @@ def main() -> None:
         presets["_last"] = current_settings()
         concert.save_presets(presets)
 
-    c_normalize.trace_add("write", lambda *_: on_setting_change(None))
+    if start_values.get("loudness") in loud_names:
+        c_loudness.set(loud_names[start_values["loudness"]])
+    c_loudness.trace_add("write", lambda *_: on_setting_change(None))
 
     def forget_sessions(*_):
         c_session.update(preview=None, full=None, dirty=True)
@@ -752,37 +839,50 @@ def main() -> None:
         var.trace_add("write", forget_sessions)
 
     c_prev = ttk.Frame(c_card, style="Card.TFrame")
-    c_prev.grid(row=7, column=0, columnspan=3, sticky="w", pady=(4, 6))
+    c_prev.grid(row=7, column=0, columnspan=3, sticky="w", pady=(2, 4))
     ttk.Label(c_prev, text="试听：从", style="Card.TLabel").pack(side="left")
     ttk.Entry(c_prev, textvariable=c_preview_at, width=7).pack(side="left", padx=4)
     ttk.Label(c_prev, text="开始的 30 秒", style="Card.TLabel").pack(side="left")
     c_preview_button = ttk.Button(c_prev, text="生成试听（AI）")
     c_preview_button.pack(side="left", padx=(10, 0))
-    c_play_a = ttk.Button(c_prev, text="▶ 原声", state="disabled", command=lambda: concert.play_wav(c_last["preview"]["preview_original"]))
+    c_play_a = ttk.Button(c_prev, text="▶ 原声", state="disabled", command=lambda: concert.PLAYER.play("original"))
     c_play_a.pack(side="left", padx=(10, 0))
     c_play_b = ttk.Button(c_prev, text="▶ 调整后", state="disabled")
     c_play_b.pack(side="left", padx=(6, 0))
-    c_stop = ttk.Button(c_prev, text="■ 停止", command=lambda: concert.play_wav(None))
+    c_hold = ttk.Button(c_prev, text="按住=听原声", state="disabled")
+    c_hold.pack(side="left", padx=(6, 0))
+    c_hold.bind("<ButtonPress-1>", lambda _e: concert.PLAYER.switch("original") if concert.PLAYER.files else None)
+    c_hold.bind("<ButtonRelease-1>", lambda _e: concert.PLAYER.switch("processed") if concert.PLAYER.files else None)
+    c_stop = ttk.Button(c_prev, text="■ 停止", command=lambda: concert.PLAYER.stop())
     c_stop.pack(side="left", padx=(6, 0))
 
     c_buttons = ttk.Frame(c_card, style="Card.TFrame")
-    c_buttons.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(6, 6))
+    c_buttons.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(2, 4))
     c_buttons.columnconfigure(0, weight=1)
     c_start_button = ttk.Button(c_buttons, text="开始处理整段", style="Primary.TButton")
     c_start_button.grid(row=0, column=0, sticky="ew")
+    c_cancel_button = ttk.Button(c_buttons, text="取消", state="disabled")
+    c_cancel_button.grid(row=0, column=1, padx=(8, 0))
+    c_batch_button = ttk.Button(c_buttons, text="批量处理…")
+    c_batch_button.grid(row=0, column=2, padx=(8, 0))
     c_reexport_button = ttk.Button(c_buttons, text="按当前设置重新导出", state="disabled")
-    c_reexport_button.grid(row=0, column=1, padx=(8, 0))
-    c_install_button = ttk.Button(c_buttons, text="安装演唱会降噪组件")
-    c_install_button.grid(row=0, column=2, padx=(8, 0))
+    c_reexport_button.grid(row=0, column=3, padx=(8, 0))
     c_open_button = ttk.Button(c_buttons, text="打开文件", state="disabled", command=lambda: open_path(c_last["path"]))
-    c_open_button.grid(row=0, column=3, padx=(8, 0))
+    c_open_button.grid(row=0, column=4, padx=(8, 0))
     c_progress = ttk.Progressbar(c_card, maximum=100)
     c_progress.grid(row=9, column=0, columnspan=3, sticky="ew")
-    ttk.Label(c_card, textvariable=c_status, style="Muted.Card.TLabel").grid(row=10, column=0, columnspan=3, sticky="w", pady=5)
+    ttk.Label(c_card, textvariable=c_status, style="Muted.Card.TLabel").grid(row=10, column=0, columnspan=3, sticky="w", pady=2)
     c_log = tk.Text(c_card, height=3, state="disabled", wrap="word", relief="flat", background="#f7f9fc", font=("Consolas", 9))
     c_log.grid(row=11, column=0, columnspan=3, sticky="nsew")
-    c_ai_label = ttk.Label(c_card, text="", style="Muted.Card.TLabel")
-    c_ai_label.grid(row=12, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    c_bottom = ttk.Frame(c_card, style="Card.TFrame")
+    c_bottom.grid(row=12, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+    c_bottom.columnconfigure(0, weight=1)
+    c_ai_label = ttk.Label(c_bottom, text="", style="Muted.Card.TLabel")
+    c_ai_label.grid(row=0, column=0, sticky="w")
+    c_settings_button = ttk.Button(c_bottom, text="设置…")
+    c_settings_button.grid(row=0, column=1, padx=(8, 0))
+    c_install_button = ttk.Button(c_bottom, text="安装演唱会降噪组件")
+    c_install_button.grid(row=0, column=2, padx=(8, 0))
 
     def c_write(message):
         c_log.configure(state="normal")
@@ -792,23 +892,28 @@ def main() -> None:
 
     def update_concert_label():
         if concert.ai_available():
-            c_ai_label.configure(text="AI 组件：已安装（Mel-Band RoFormer 去观众声 / 去底噪模型）")
+            c_ai_label.configure(text="AI 组件：已安装")
             c_install_button.configure(text="重新安装组件")
         else:
-            c_ai_label.configure(text="AI 组件：未安装。第一次使用请点“安装演唱会降噪组件”（约 4 GB，有 NVIDIA 显卡会自动用显卡加速）")
-            c_install_button.configure(text="安装演唱会降噪组件（约 4 GB）")
+            c_ai_label.configure(text="AI 组件：未安装，第一次使用请点右边的按钮")
+            c_install_button.configure(text="安装演唱会降噪组件（约 5 GB）")
 
     update_concert_label()
 
     def set_concert_busy(busy):
         state["concert_busy"] = busy
-        for button in (c_start_button, c_preview_button, c_install_button):
+        for button in (c_start_button, c_preview_button, c_install_button, c_batch_button, c_settings_button):
             button.configure(state="disabled" if busy else "normal")
+        c_cancel_button.configure(state="normal" if busy else "disabled")
+        if not busy and c_session.get("full"):
+            c_reexport_button.configure(state="normal")
+        elif busy:
+            c_reexport_button.configure(state="disabled")
 
     def install_concert_clicked():
         if state.get("concert_busy"):
             return
-        if not messagebox.askyesno(APP_TITLE, "将下载并安装演唱会降噪组件（约 4 GB，需要联网，可能要 10～30 分钟）。\n安装完成后可以离线使用。现在开始吗？"):
+        if not messagebox.askyesno(APP_TITLE, "将下载并安装演唱会降噪组件（约 5 GB，需要联网，可能要 10～40 分钟）。\n安装完成后可以离线使用。现在开始吗？"):
             return
         set_concert_busy(True)
         c_status.set("正在安装演唱会降噪组件……")
@@ -862,12 +967,14 @@ def main() -> None:
         output_dir = c_output_dir.get().strip() or os.path.dirname(source)
         make_video = c_video.get()
         make_stems = c_stems.get()
+        fast = c_fast.get()
+        concert.PLAYER.close()
         log = lambda text: events.put(("concert_log", text))
         progress = lambda frac, stage="": events.put(("concert_progress", (frac, stage)))
 
         def worker():
             try:
-                session = concert.run_ai(source, ffmpeg, steps, start_at, log=log, progress=progress)
+                session = concert.run_ai(source, ffmpeg, steps, start_at, log=log, progress=progress, fast=fast)
                 if preview:
                     result = concert.render_preview(ffmpeg, session, settings)
                 else:
@@ -875,6 +982,8 @@ def main() -> None:
                     result = concert.export(ffmpeg, session, settings, output_dir, make_video, log, stems=make_stems)
                 result["session"] = session
                 events.put(("concert_done", result))
+            except concert.Cancelled:
+                events.put(("concert_cancelled", None))
             except Exception as error:
                 events.put(("concert_error", str(error)))
 
@@ -885,10 +994,11 @@ def main() -> None:
         session = c_session.get("preview")
         if not session or state.get("concert_busy"):
             return
-        concert.play_wav(None)
-        if not c_session["dirty"] and c_last.get("preview"):
-            concert.play_wav(c_last["preview"]["preview_processed"])
+        if not c_session["dirty"] and concert.PLAYER.files:
+            concert.PLAYER.play("processed")
             return
+        state["resume_at"] = concert.PLAYER.position() if concert.PLAYER.playing() else 0
+        concert.PLAYER.close()   # 先释放文件，才能覆盖
         ffmpeg = core.find_ffmpeg()
         settings = current_settings()
         c_status.set("正在按新设置生成试听……")
@@ -927,8 +1037,90 @@ def main() -> None:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def cancel_concert():
+        state["batch_cancel"] = True
+        concert.cancel()
+        c_status.set("正在取消……")
+
+    def batch_process():
+        if state.get("concert_busy"):
+            return
+        if not concert.ai_available():
+            messagebox.showinfo(APP_TITLE, "第一次使用需要先安装演唱会降噪组件。")
+            return
+        files = filedialog.askopenfilenames(filetypes=concert.MEDIA_TYPES, title="选择要批量处理的视频（可多选）")
+        if not files:
+            return
+        ffmpeg = core.find_ffmpeg()
+        steps, settings = selected_steps(), current_settings()
+        remember_settings()
+        output_dir = c_output_dir.get().strip()
+        make_video, make_stems, fast = c_video.get(), c_stems.get(), c_fast.get()
+        concert.PLAYER.close()
+        set_concert_busy(True)
+        state["batch_cancel"] = False
+        c_progress.stop(); c_progress.configure(mode="determinate", value=0)
+        c_write("—" * 60)
+        total = len(files)
+
+        def worker():
+            ok, failed = 0, []
+            for index, source in enumerate(files):
+                if state.get("batch_cancel"):
+                    break
+                name = os.path.basename(source)
+                events.put(("concert_log", f"[{index + 1}/{total}] {name}"))
+
+                def progress(frac, stage="", i=index):
+                    events.put(("concert_progress", ((i + frac) / total, f"第 {i + 1}/{total} 个 · {stage}")))
+                try:
+                    session = concert.run_ai(source, ffmpeg, steps, None, log=lambda t: events.put(("concert_log", t)),
+                                             progress=progress, fast=fast)
+                    result = concert.export(ffmpeg, session, settings, output_dir or os.path.dirname(source), make_video,
+                                            lambda t: events.put(("concert_log", t)), stems=make_stems)
+                    events.put(("concert_log", "✔ " + (result.get("video") or result["audio"])))
+                    state["batch_last"] = result.get("video") or result["audio"]
+                    ok += 1
+                except concert.Cancelled:
+                    break
+                except Exception as error:
+                    failed.append(name)
+                    events.put(("concert_log", f"✖ {name}：{str(error)[-300:]}"))
+            events.put(("concert_batch_done", (ok, failed, total)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_settings():
+        win = tk.Toplevel(root)
+        win.title("演唱会降噪 · 设置")
+        win.transient(root)
+        win.resizable(False, False)
+        frame = ttk.Frame(win, padding=14)
+        frame.pack(fill="both", expand=True)
+        temp_var = tk.StringVar(value=prefs.get("temp_dir", ""))
+        ttk.Label(frame, text="中间文件放在哪（整场演唱会每小时约 3 GB，处理完同类的新文件时会自动删掉旧的）").grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Entry(frame, textvariable=temp_var, width=48).grid(row=1, column=0, sticky="ew", pady=6)
+        ttk.Button(frame, text="浏览…", command=lambda: temp_var.set(filedialog.askdirectory(parent=win) or temp_var.get())).grid(row=1, column=1, padx=6)
+        ttk.Label(frame, text="留空 = 系统临时文件夹（一般在 C 盘）", foreground="#6b7686").grid(row=2, column=0, columnspan=3, sticky="w")
+        ttk.Checkbutton(frame, text="显卡半精度加速（约快 1.5–2 倍；关掉则和旧版逐位一致）", variable=c_fast).grid(row=3, column=0, columnspan=3, sticky="w", pady=(12, 0))
+
+        def save():
+            folder = temp_var.get().strip()
+            if folder and not os.path.isdir(folder):
+                messagebox.showwarning(APP_TITLE, "这个文件夹不存在。", parent=win)
+                return
+            prefs.update(temp_dir=folder, fast=bool(c_fast.get()))
+            concert.set_temp_root(folder or None)
+            concert.save_presets(presets)
+            win.destroy()
+
+        ttk.Button(frame, text="保存", style="Primary.TButton", command=save).grid(row=4, column=0, columnspan=3, sticky="e", pady=(14, 0))
+
     c_play_b.configure(command=play_adjusted)
     c_reexport_button.configure(command=reexport)
+    c_cancel_button.configure(command=cancel_concert)
+    c_batch_button.configure(command=batch_process)
+    c_settings_button.configure(command=open_settings)
 
     c_install_button.configure(command=install_concert_clicked)
     c_preview_button.configure(command=lambda: concert_job(True))
@@ -970,6 +1162,10 @@ def main() -> None:
                     state["download_busy"] = False; d_start_button.configure(state="normal"); d_cancel_button.configure(state="disabled"); d_progress.stop()
                     if kind == "download_done":
                         d_last["path"] = value; d_open_button.configure(state="normal"); d_status.set("完成"); d_write("✔ " + value)
+                        if d_send.get() and os.path.isfile(value):
+                            notebook.select(concert_tab)
+                            load_concert_file(value)
+                            c_write("已从“视频提取”收到：" + os.path.basename(value) + "。先点“生成试听（AI）”试试效果。")
                     elif kind == "download_cancelled":
                         d_status.set("已取消")
                     else:
@@ -1018,13 +1214,18 @@ def main() -> None:
                     if "preview_processed" in value:
                         c_session.update(preview=session, dirty=False)
                         c_last["preview"] = value
-                        for button in (c_play_a, c_play_b, c_stop):
+                        for button in (c_play_a, c_play_b, c_stop, c_hold):
                             button.configure(state="normal")
-                        c_status.set("试听已生成：拖动上面的滑块调整，点“▶ 调整后”马上听到效果（不用重跑 AI）")
-                        concert.play_wav(value["preview_processed"])
+                        c_status.set("试听已生成：拖动滑块后点“▶ 调整后”；按住“按住=听原声”可在同一时间点对比")
+                        concert.PLAYER.load(original=value["preview_original"], processed=value["preview_processed"])
+                        concert.PLAYER.play("processed", 0)
                     else:
                         c_session.update(full=session)
                         c_reexport_button.configure(state="normal")
+                        line = (session or {}).get("analysis", {}).get("timeline") or {}
+                        if line.get("vocal") and c_line.get("data"):
+                            c_line["data"]["vocal"] = line["vocal"]
+                            draw_timeline()
                         c_last["path"] = value.get("video") or value.get("audio")
                         c_open_button.configure(state="normal"); c_status.set("完成。想换个音色？调好滑块后点“按当前设置重新导出”，几秒就好"); c_write("✔ " + c_last["path"]); root.bell()
                     draw_spectrum()
@@ -1033,7 +1234,30 @@ def main() -> None:
                     c_last["preview"] = value
                     c_session["dirty"] = False
                     c_status.set("已按新设置更新试听")
-                    concert.play_wav(value["preview_processed"])
+                    concert.PLAYER.load(original=value["preview_original"], processed=value["preview_processed"])
+                    concert.PLAYER.play("processed", state.get("resume_at", 0))
+                elif kind == "concert_timeline":
+                    path, data = value
+                    if path == c_input.get():
+                        c_line["data"] = data
+                        draw_timeline()
+                elif kind == "concert_cancelled":
+                    set_concert_busy(False); c_progress.configure(value=0); c_status.set("已取消"); c_write("已取消")
+                elif kind == "concert_batch_done":
+                    ok, failed, total = value
+                    set_concert_busy(False); c_progress.configure(value=100 if ok else 0)
+                    c_last["path"] = state.get("batch_last")
+                    if c_last["path"]:
+                        c_open_button.configure(state="normal")
+                    c_status.set(f"批量处理结束：成功 {ok} 个" + (f"，失败 {len(failed)} 个" if failed else "") + (f"，未处理 {total - ok - len(failed)} 个（已取消）" if ok + len(failed) < total else ""))
+                    root.bell()
+                elif kind == "dropped":
+                    media = [f for f in value if os.path.splitext(f)[1].lower() in concert.MEDIA_EXTENSIONS]
+                    if media:
+                        notebook.select(concert_tab)
+                        load_concert_file(media[0])
+                        if len(media) > 1:
+                            c_write(f"拖进了 {len(media)} 个文件，已选第一个。要一次处理多个，请用“批量处理…”")
                 elif kind == "concert_error":
                     set_concert_busy(False); state["concert_busy"] = False; c_progress.configure(value=0); c_status.set("处理失败"); c_write("✖ " + value); messagebox.showerror(APP_TITLE, value)
                 elif kind == "enhance_log":
@@ -1061,6 +1285,24 @@ def main() -> None:
         if r_hotkeys.get():
             root.after(0, toggle_pause)
 
+    def enable_drag_and_drop():
+        """把视频拖进窗口就能选中（需要 windnd；没有的话在后台装上，下次启动生效）。"""
+        if os.name != "nt":
+            return
+        try:
+            import windnd
+            windnd.hook_dropfiles(root, func=lambda paths: events.put(("dropped", [str(p) for p in paths])), force_unicode=True)
+        except ImportError:
+            python = Path(sys.executable).with_name("python.exe")
+            try:
+                subprocess.Popen([str(python if python.is_file() else sys.executable), "-m", "pip", "install",
+                                  "--disable-pip-version-check", "-q", "windnd"], creationflags=NO_WINDOW)
+            except OSError:
+                pass
+        except Exception:
+            pass
+
+    enable_drag_and_drop()
     hotkeys = GlobalHotkeys(hotkey_toggle, hotkey_pause)
     hotkeys.start()
 

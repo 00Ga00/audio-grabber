@@ -24,7 +24,7 @@ MODELS = {
     # 去底噪：输出 dry（干净）和 other（噪声），保留 dry
     "denoise": ("denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt", "dry"),
 }
-# 人声/伴奏分离（Kimberley Jensen 的 Mel-Band RoFormer 人声模型，约 230 MB）：只取人声，伴奏 = 原来 − 人声，
+# 人声/伴奏分离（Kimberley Jensen 的 Mel-Band RoFormer 人声模型，约 900 MB）：只取人声，伴奏 = 原来 − 人声，
 # 这样两者相加严格等于不分离时的结果，默认设置下音色完全不变
 VOCAL_MODEL = ("vocals_mel_band_roformer.ckpt", "vocals")
 # 音质修复：Apollo Universal（修复有损压缩：补回被砍掉的高频、减轻压缩失真）
@@ -44,8 +44,56 @@ def emit(kind: str, **data) -> None:
     print(json.dumps(data, ensure_ascii=False), flush=True)
 
 
+# 模型内部每处理一小块就回调一次（用来显示细致的进度），见 _install_hooks
+PROGRESS = {"cb": None}
+FAST = {"on": True}
+
+
+def _install_hooks() -> None:
+    """1) 接管 audio-separator 的 tqdm 进度条 → 细致进度；
+    2) 模型下载改成“先下到 .part、完整后再改名”并显示 MB 进度（原来中断后会留下损坏的模型文件）。"""
+    import audio_separator.separator.architectures.mdxc_separator as mdxc
+    from audio_separator.separator import Separator
+
+    def progress_iter(iterable=None, *args, **kwargs):
+        items = list(iterable) if iterable is not None else []
+        count = max(len(items), 1)
+        for i, item in enumerate(items):
+            if PROGRESS["cb"]:
+                PROGRESS["cb"](i / count)
+            yield item
+
+    mdxc.tqdm = progress_iter
+
+    def safe_download(self, url, output_path):
+        if os.path.isfile(output_path):
+            return
+        import requests
+
+        name = os.path.basename(output_path)
+        part = output_path + ".part"
+        response = requests.get(url, stream=True, timeout=300)
+        if response.status_code != 200:
+            raise RuntimeError(f"下载 {name} 失败（HTTP {response.status_code}），请检查网络后重试。")
+        total = int(response.headers.get("content-length", 0))
+        done, last = 0, 0
+        with open(part, "wb") as handle:
+            for chunk in response.iter_content(chunk_size=1 << 20):
+                handle.write(chunk)
+                done += len(chunk)
+                if total > 20_000_000 and done - last > 5_000_000:
+                    last = done
+                    emit("download", name=name, done=done, total=total)
+        if total and done != total:
+            raise RuntimeError(f"{name} 没有下载完整，请重试。")
+        os.replace(part, output_path)
+
+    Separator.download_file_if_not_exists = safe_download
+
+
 def make_separator(models_dir: str, out_dir: str):
     from audio_separator.separator import Separator
+    import torch
 
     return Separator(
         log_level=logging.WARNING,
@@ -54,7 +102,36 @@ def make_separator(models_dir: str, out_dir: str):
         output_format="WAV",
         normalization_threshold=1.0,  # 输入已预先压到 0.5 峰值，不会触发自动缩放
         use_soundfile=True,
+        # 显卡上用半精度（autocast）：通常快 1.5–2 倍；可在“设置…”里关掉（关掉后和旧版结果逐位一致）
+        use_autocast=bool(FAST["on"] and torch.cuda.is_available()),
     )
+
+
+class ModelPool:
+    """每个模型只加载一次、一直留在显存里（原来每段都要重新加载一遍）。显存不够时自动释放其他模型再试。"""
+
+    def __init__(self, models_dir: str, out_dir: str):
+        self.models_dir, self.out_dir, self.pool = models_dir, out_dir, {}
+
+    def get(self, model: str):
+        if model not in self.pool:
+            if not os.path.isfile(os.path.join(self.models_dir, model)):
+                emit("notice", message=f"第一次使用，正在下载模型 {model}（约 900 MB）……")
+            sep = make_separator(self.models_dir, self.out_dir)
+            sep.load_model(model)
+            self.pool[model] = sep
+        return self.pool[model]
+
+    def separate(self, model: str, path: str, keep: str) -> str:
+        import torch
+        try:
+            return separate_file(self.get(model), path, keep)
+        except torch.cuda.OutOfMemoryError:
+            for name in [m for m in self.pool if m != model]:
+                del self.pool[name]
+            torch.cuda.empty_cache()
+            emit("notice", message="显存不够，改为一次只放一个模型（会慢一点）。")
+            return separate_file(self.get(model), path, keep)
 
 
 def download(models_dir: str) -> None:
@@ -208,18 +285,24 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
     starts = list(range(0, max(total, 1), seg))
     loaded = {}
     meter_base, meter_high, meter_voc = tone.SpectrumMeter(rate), tone.SpectrumMeter(rate), tone.SpectrumMeter(rate)
+    line_base, line_inst, line_voc = tone.Timeline(rate), tone.Timeline(rate), tone.Timeline(rate)
     layout = {"base": 0, "highs": 2 if restore else None, "vocals": (4 if restore else 2) if split else None}
     width = 2 + 2 * restore + 2 * split
 
     with tempfile.TemporaryDirectory(prefix="concert_") as tmp, \
             sf.SoundFile(out, "w", samplerate=rate, channels=width, subtype="PCM_24") as dst:
-        sep = make_separator(models_dir, tmp) if (sep_steps or split) else None
+        pool = ModelPool(models_dir, tmp)
         if restore:  # 先准备好（必要时下载）音质修复模型，免得处理了一半才失败
             loaded["apollo"] = ApolloRestorer(models_dir)
 
         def write(data):
             dst.write(data)
             meter_base.add(data[:, :2])
+            line_base.add(data[:, :2])
+            if split:
+                vocals_part = data[:, layout["vocals"]:layout["vocals"] + 2]
+                line_voc.add(vocals_part)
+                line_inst.add(data[:, :2] - vocals_part)
             if restore:
                 meter_high.add(data[:, 2:4])
             if split:
@@ -239,12 +322,12 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
             current = piece
             for s_i, step in enumerate(sep_steps):
                 frac = (index + s_i / max(total_steps, 1)) / len(starts)
-                emit("progress", stage=f"第 {index + 1}/{len(starts)} 段 · {STEP_NAMES[step]}", fraction=frac)
+                stage = f"第 {index + 1}/{len(starts)} 段 · {STEP_NAMES[step]}"
+                emit("progress", stage=stage, fraction=frac)
+                PROGRESS["cb"] = lambda x, b=frac, st=stage: emit("progress", stage=st, fraction=b + x / max(total_steps, 1) / len(starts))
                 model, keep = MODELS[step]
-                if loaded.get("model") != model:
-                    sep.load_model(model)
-                    loaded["model"] = model
-                result = separate_file(sep, current, keep)
+                result = pool.separate(model, current, keep)
+                PROGRESS["cb"] = None
                 if current != piece:
                     os.remove(current)
                 current = result
@@ -269,12 +352,10 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
                 emit("progress", stage=f"第 {index + 1}/{len(starts)} 段 · 分离人声和伴奏", fraction=frac)
                 base_path = os.path.join(tmp, f"seg{index:04d}_base.wav")
                 sf.write(base_path, done[:, :2], rate, subtype="FLOAT")
-                if loaded.get("model") != VOCAL_MODEL[0]:
-                    if not os.path.isfile(os.path.join(models_dir, VOCAL_MODEL[0])):
-                        emit("notice", message="第一次分离人声，正在下载人声分离模型（约 230 MB）……")
-                    sep.load_model(VOCAL_MODEL[0])
-                    loaded["model"] = VOCAL_MODEL[0]
-                vocal_path = separate_file(sep, base_path, VOCAL_MODEL[1])
+                stage = f"第 {index + 1}/{len(starts)} 段 · 分离人声和伴奏"
+                PROGRESS["cb"] = lambda x, b=frac, st=stage: emit("progress", stage=st, fraction=b + x / max(total_steps, 1) / len(starts))
+                vocal_path = pool.separate(VOCAL_MODEL[0], base_path, VOCAL_MODEL[1])
+                PROGRESS["cb"] = None
                 vocals, _ = sf.read(vocal_path, dtype="float32", always_2d=True)
                 os.remove(vocal_path)
                 os.remove(base_path)
@@ -309,6 +390,11 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
             "layout": layout,
             "vocals": [round(float(v), 2) for v in tone.band_levels(freqs, meter_voc.spectrum()[1])] if split else None,
         }
+        loud, harsh = line_base.result()
+        analysis["timeline"] = {"loud": loud, "harsh": harsh}
+        if split:
+            analysis["timeline"]["vocal"] = line_voc.result()[0]
+            analysis["timeline"]["inst_harsh"] = line_inst.result()[1]
         with open(analysis_path, "w", encoding="utf-8") as handle:
             json.dump(analysis, handle)
     emit("done", output=out)
@@ -322,12 +408,15 @@ def main() -> int:
     parser.add_argument("--models", required=True)
     parser.add_argument("--steps", default="crowd,denoise")
     parser.add_argument("--analysis")
+    parser.add_argument("--no-fast", action="store_true", help="不用半精度（结果和旧版逐位一致，速度慢一些）")
     args = parser.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
     try:
+        FAST["on"] = not args.no_fast
+        _install_hooks()
         if args.download:
             download(args.models)
         else:

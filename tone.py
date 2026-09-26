@@ -120,3 +120,42 @@ def highpass_fir(cutoff: float, rate: int, taps: int = 2047, transition: float =
     from scipy.signal import firwin
     edge = min(cutoff + transition / 2, rate / 2 - 100)
     return firwin(taps, edge, pass_zero=False, fs=rate, window=("kaiser", 8.0))
+
+
+class Timeline:
+    """每秒一个点：整体响度、2–5 kHz“刺耳度”（dB）。用于时间轴显示和伴奏动态柔化的阈值。"""
+
+    def __init__(self, rate: int):
+        from scipy.signal import butter
+        self.rate = rate
+        self.sos = butter(4, [2000, 5000], btype="band", fs=rate, output="sos")
+        self.zi = None
+        self.acc_all, self.acc_harsh, self.count = 0.0, 0.0, 0
+        self.loud, self.harsh = [], []
+
+    def add(self, block: np.ndarray) -> None:
+        from scipy.signal import sosfilt, sosfilt_zi
+        mono = (block.mean(axis=1) if block.ndim > 1 else block).astype(np.float64)
+        if self.zi is None:
+            self.zi = sosfilt_zi(self.sos) * 0.0
+        band, self.zi = sosfilt(self.sos, mono, zi=self.zi)
+        pos = 0
+        while pos < len(mono):
+            take = min(self.rate - self.count, len(mono) - pos)
+            self.acc_all += float(np.sum(mono[pos:pos + take] ** 2))
+            self.acc_harsh += float(np.sum(band[pos:pos + take] ** 2))
+            self.count += take
+            pos += take
+            if self.count >= self.rate:
+                self._flush()
+
+    def _flush(self) -> None:
+        if self.count:
+            self.loud.append(round(10 * np.log10(self.acc_all / self.count + 1e-12), 1))
+            self.harsh.append(round(10 * np.log10(self.acc_harsh / self.count + 1e-12), 1))
+        self.acc_all, self.acc_harsh, self.count = 0.0, 0.0, 0
+
+    def result(self) -> tuple[list[float], list[float]]:
+        if self.count > self.rate // 4:
+            self._flush()
+        return self.loud, self.harsh
