@@ -177,7 +177,7 @@ AI 组件安装失败|AI installation failed|KI-Installation fehlgeschlagen
 安装演唱会降噪组件（约 5 GB）|Install concert AI (≈5 GB)|Konzert-KI installieren (≈5 GB)
 重新安装组件|Reinstall|Neu installieren
 AI 组件：已安装|AI: installed|KI: installiert
-AI 组件：未安装，第一次使用请点右边的按钮|AI: not installed – click the button on the right first|KI: nicht installiert – zuerst rechts auf den Knopf klicken
+AI 组件：未安装，请到左下角“设置”里安装|AI: not installed – install it under “Settings” (bottom left)|KI: nicht installiert – unter „Einstellungen“ (unten links) installieren
 正在安装演唱会降噪组件……|Installing concert AI…|Konzert-KI wird installiert…
 组件安装完成，可以开始了|Installed – ready to go|Installiert – bereit
 组件安装失败|Installation failed|Installation fehlgeschlagen
@@ -276,6 +276,25 @@ Hugging Face 授权|Hugging Face access|Hugging-Face-Zugang
 声部音量地图已生成：颜色越深越响；最上面一行是每一秒最响的声部|Map ready: darker = louder; the top row shows the loudest part each second|Karte fertig: dunkler = lauter; oben die jeweils lauteste Stimme
 请先在“演唱会降噪”页安装 AI 组件（扒谱和它共用显卡环境）。|Please install the AI on the “Concert cleanup” tab first (shared GPU environment).|Bitte zuerst im Tab „Konzert-Bereinigung“ die KI installieren (gemeinsame GPU-Umgebung).
 最响|loudest|lauteste
+设置|Settings|Einstellungen
+界面与更新|Interface & updates|Oberfläche & Updates
+AI 组件|AI components|KI-Komponenten
+处理|Processing|Verarbeitung
+中间文件位置|Temporary files|Temporäre Dateien
+安装 / 重新安装|Install / reinstall|Installieren / neu
+安装进度会显示在对应的功能页里|Progress is shown on the matching feature page|Der Fortschritt erscheint auf der jeweiligen Seite
+留空 = 系统临时文件夹（一般在 C 盘）；整场演唱会每小时约 3 GB，旧的会自动删掉|Empty = system temp folder (usually C:); ≈3 GB per concert hour, old files are removed automatically|Leer = System-Temp-Ordner (meist C:); ≈3 GB pro Konzertstunde, alte Dateien werden automatisch gelöscht
+已保存|Saved|Gespeichert
+已安装|Installed|Installiert
+未安装（约 5 GB）|Not installed (≈5 GB)|Nicht installiert (≈5 GB)
+未安装（约 300 MB + 模型 1.4 GB）|Not installed (≈300 MB + 1.4 GB model)|Nicht installiert (≈300 MB + 1,4 GB Modell)
+授权已设置|access set|Zugang gesetzt
+需要 Hugging Face 授权|Hugging Face access needed|Hugging-Face-Zugang nötig
+未安装（约 26 MB）|Not installed (≈26 MB)|Nicht installiert (≈26 MB)
+已就绪|Ready|Bereit
+第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
+录音组件|Recorder|Rekorder
+● 有新版本|● Update available|● Update verfügbar
 """
 
 # 动态文字里的片段（f-string 拼出来的状态、日志），按从长到短替换
@@ -344,6 +363,7 @@ AI 处理完成|AI finished|KI fertig
 分离六个声部（人声/鼓/贝斯/吉他/钢琴/其他）|Separating six stems (vocals/drums/bass/guitar/piano/other)|Sechs Spuren trennen (Gesang/Schlagzeug/Bass/Gitarre/Klavier/Rest)
 识别到调性：|Key detected: |Erkannte Tonart: 
 （活动）| (activity)| (Aktivität)
+版本 |Version |Version
 """
 
 

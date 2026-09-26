@@ -31,7 +31,7 @@ def load_download_core():
 
 core = load_download_core()
 APP_TITLE = "Audio Studio"
-APP_VERSION = "3.1.0"
+APP_VERSION = "4.0.0"
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
@@ -62,10 +62,10 @@ def main() -> None:
         pass
     scale = max(1.0, dpi / 96.0)
     root.tk.call("tk", "scaling", dpi / 72.0)  # 字体（磅）按真实 DPI 显示
-    width = min(int(900 * scale), int(root.winfo_screenwidth() * 0.9))
+    width = min(int(1080 * scale), int(root.winfo_screenwidth() * 0.9))
     height = min(int(760 * scale), int(root.winfo_screenheight() * 0.85))
     root.geometry(f"{width}x{height}")
-    root.minsize(min(int(800 * scale), width), min(int(650 * scale), height))
+    root.minsize(min(int(960 * scale), width), min(int(650 * scale), height))
     root.configure(background="#eef2f7")
     root.option_add("*Font", ("Microsoft YaHei UI", 10))
     style = ttk.Style()
@@ -85,17 +85,72 @@ def main() -> None:
     state = {"download_busy": False, "recording": False, "paused": False, "record_stopped": False, "enhance_busy": False, "record_config": None}
     recorder = RecordingController(lambda event: events.put(("record", event)))
 
-    shell = ttk.Frame(root, padding=(20, 16))
+    # ---- 左侧导航栏 + 右侧内容区
+    SIDE_BG, SIDE_FG, SIDE_MUTED, SIDE_HOVER, SIDE_ACTIVE, ACCENT = "#172033", "#dfe6f0", "#8d99ab", "#223049", "#2b3b58", "#4c8dff"
+    shell = tk.Frame(root, background="#eef2f7")
     shell.pack(fill="both", expand=True)
-    header = ttk.Frame(shell, style="TFrame")
-    header.pack(fill="x")
-    ttk.Label(header, text="Audio Studio", style="Title.TLabel").pack(side="left", anchor="w")
-    update_button = ttk.Button(header, text="检查更新")
-    update_button.pack(side="right")
-    language_var = tk.StringVar(value=i18n.LANGUAGES[i18n.LANG])
-    language_box = ttk.Combobox(header, textvariable=language_var, values=list(i18n.LANGUAGES.values()), state="readonly", width=9)
-    language_box.pack(side="right", padx=(0, 10))
-    ttk.Label(header, text="语言 / Language", style="Subtitle.TLabel").pack(side="right", padx=(0, 6))
+    sidebar = tk.Frame(shell, background=SIDE_BG, width=int(186 * scale))
+    sidebar.pack(side="left", fill="y")
+    sidebar.pack_propagate(False)
+    tk.Label(sidebar, text="Audio Studio", background=SIDE_BG, foreground="#ffffff",
+             font=("Microsoft YaHei UI", 15, "bold")).pack(anchor="w", padx=18, pady=(20, 0))
+    tk.Label(sidebar, text="提取 · 录制 · 增强，全程在本机处理", background=SIDE_BG, foreground=SIDE_MUTED, justify="left",
+             wraplength=int(165 * scale), font=("Microsoft YaHei UI", 8)).pack(anchor="w", padx=18, pady=(2, 18))
+    nav_top = tk.Frame(sidebar, background=SIDE_BG)
+    nav_top.pack(fill="x")
+    nav_bottom = tk.Frame(sidebar, background=SIDE_BG)
+    nav_bottom.pack(side="bottom", fill="x", pady=(0, 14))
+    update_badge = tk.Label(nav_bottom, text="", background=SIDE_BG, foreground="#ffd479", cursor="hand2",
+                            font=("Microsoft YaHei UI", 8, "bold"))
+    update_badge.pack(anchor="w", padx=18, pady=(0, 6))
+    content = ttk.Frame(shell, padding=(12, 10))
+    content.pack(side="left", fill="both", expand=True)
+
+    class SideNav(ttk.Frame):
+        """左侧导航：接口和 ttk.Notebook 一样（add / insert / select），各页面代码不用改。"""
+
+        def __init__(self, parent):
+            super().__init__(parent)
+            self.columnconfigure(0, weight=1)
+            self.rowconfigure(0, weight=1)
+            self.pages, self.current = [], None
+
+        def insert(self, index, frame, text="", bottom=False):
+            item = tk.Label(nav_bottom if bottom else nav_top, text=text, anchor="w", background=SIDE_BG, foreground=SIDE_FG,
+                            font=("Microsoft YaHei UI", 11), padx=18, pady=int(9 * scale / 1.25), cursor="hand2")
+            item.bind("<Button-1>", lambda _e: self.select(frame))
+            item.bind("<Enter>", lambda _e: item.configure(background=SIDE_HOVER) if self.current is not frame else None)
+            item.bind("<Leave>", lambda _e: item.configure(background=SIDE_ACTIVE if self.current is frame else SIDE_BG))
+            position = index if isinstance(index, int) else len(self.pages)
+            self.pages.insert(position, (frame, item, bottom))
+            for _, other, is_bottom in self.pages:
+                other.pack_forget()
+            for _, other, is_bottom in self.pages:
+                other.pack(fill="x", side="top")
+            frame.grid(row=0, column=0, sticky="nsew")
+            if self.current is None:
+                self.select(frame)
+            else:
+                self.current.tkraise()
+
+        def add(self, frame, text="", bottom=False):
+            self.insert(len(self.pages), frame, text, bottom)
+
+        def select(self, frame=None):
+            if frame is None:
+                return str(self.current)
+            if isinstance(frame, int):
+                frame = self.pages[frame][0]
+            self.current = frame
+            for page, item, _ in self.pages:
+                active = page is frame
+                item.configure(background=SIDE_ACTIVE if active else SIDE_BG, foreground="#ffffff" if active else SIDE_FG,
+                               font=("Microsoft YaHei UI", 11, "bold" if active else "normal"))
+            frame.tkraise()
+
+        def tabs(self):
+            return [str(page) for page, _, _ in self.pages]
+
     update_state = {"info": None}
 
     def language_changed(_event=None):
@@ -109,7 +164,6 @@ def main() -> None:
             updater.restart()
             root.destroy()
 
-    language_box.bind("<<ComboboxSelected>>", language_changed)
 
     def check_updates(silent=False):
         def worker():
@@ -141,9 +195,8 @@ def main() -> None:
                 events.put(("update_error", str(error)))
         threading.Thread(target=worker, daemon=True).start()
 
-    update_button.configure(command=update_clicked)
-    ttk.Label(shell, text="提取 · 录制 · 增强，全程在本机处理", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 4))
-    notebook = ttk.Notebook(shell)
+
+    notebook = SideNav(content)
     notebook.pack(fill="both", expand=True)
 
     def card(parent, padding=18):
@@ -807,7 +860,7 @@ def main() -> None:
         data, duration = c_line["data"], c_line["duration"] or 0.0
         if not data or not data.get("loud"):
             cv.create_text(w / 2, h / 2, text="时间轴：选好文件后显示每一秒的响度（灰）和刺耳度（红）；点一下就从那里试听",
-                           fill="#8a94a3", font=("Microsoft YaHei UI", 8))
+                           fill="#8a94a3", font=("Microsoft YaHei UI", 8), width=w - 16, justify="center")
             return
         loud, harsh = data["loud"], data.get("harsh") or []
         vocal = data.get("vocal")
@@ -1009,7 +1062,7 @@ def main() -> None:
             c_ai_label.configure(text="AI 组件：已安装")
             c_install_button.configure(text="重新安装组件")
         else:
-            c_ai_label.configure(text="AI 组件：未安装，第一次使用请点右边的按钮")
+            c_ai_label.configure(text="AI 组件：未安装，请到左下角“设置”里安装")
             c_install_button.configure(text="安装演唱会降噪组件（约 5 GB）")
 
     update_concert_label()
@@ -1615,6 +1668,79 @@ def main() -> None:
             if value != "已取消":
                 messagebox.showerror(APP_TITLE, value)
 
+    # ------------------------------------------------------------- 设置（语言、更新、AI 组件、处理选项都在这里）
+    settings_tab = ttk.Frame(notebook, padding=8)
+    notebook.add(settings_tab, text="设置", bottom=True)
+    g_card = card(settings_tab)
+    g_card.columnconfigure(1, weight=1)
+    ttk.Label(g_card, text="设置", style="Card.TLabel", font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, columnspan=4, sticky="w")
+
+    def section(row, text):
+        ttk.Label(g_card, text=text, style="Card.TLabel", font=("Microsoft YaHei UI", 11, "bold")).grid(
+            row=row, column=0, columnspan=4, sticky="w", pady=(16, 4))
+
+    section(1, "界面与更新")
+    ttk.Label(g_card, text="语言 / Language", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=3)
+    language_var = tk.StringVar(value=i18n.LANGUAGES[i18n.LANG])
+    language_box = ttk.Combobox(g_card, textvariable=language_var, values=list(i18n.LANGUAGES.values()), state="readonly", width=12)
+    language_box.grid(row=2, column=1, sticky="w", padx=8)
+    language_box.bind("<<ComboboxSelected>>", language_changed)
+    ttk.Label(g_card, text=f"版本 {APP_VERSION}", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=3)
+    update_button = ttk.Button(g_card, text="检查更新", command=update_clicked)
+    update_button.grid(row=3, column=1, sticky="w", padx=8)
+    update_badge.bind("<Button-1>", lambda _e: (notebook.select(settings_tab), update_clicked()))
+
+    section(4, "AI 组件")
+    g_rows = {}
+    for row, (key, name) in enumerate((("concert", "演唱会降噪"), ("score", "扒谱"), ("voice", "AI 人声增强"), ("recorder", "录音组件")), start=5):
+        ttk.Label(g_card, text=name, style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=3)
+        label = ttk.Label(g_card, text="", style="Muted.Card.TLabel")
+        label.grid(row=row, column=1, sticky="w", padx=8)
+        g_rows[key] = label
+    ttk.Button(g_card, text="安装 / 重新安装", command=install_concert_clicked).grid(row=5, column=2, sticky="e")
+    ttk.Button(g_card, text="安装 / 重新安装", command=install_score).grid(row=6, column=2, sticky="e")
+    ttk.Button(g_card, text="Hugging Face 授权…", command=open_token_dialog).grid(row=6, column=3, sticky="e", padx=(6, 0))
+    ttk.Button(g_card, text="安装 / 重新安装", command=install_ai_clicked).grid(row=7, column=2, sticky="e")
+    ttk.Label(g_card, text="安装进度会显示在对应的功能页里", style="Muted.Card.TLabel").grid(row=9, column=0, columnspan=4, sticky="w")
+
+    section(10, "处理")
+    ttk.Label(g_card, text="中间文件位置", style="Card.TLabel").grid(row=11, column=0, sticky="w", pady=3)
+    g_temp = tk.StringVar(value=prefs.get("temp_dir", ""))
+    ttk.Entry(g_card, textvariable=g_temp).grid(row=11, column=1, sticky="ew", padx=8)
+    ttk.Button(g_card, text="浏览…", command=lambda: g_temp.set(filedialog.askdirectory() or g_temp.get())).grid(row=11, column=2, sticky="e")
+    ttk.Label(g_card, text="留空 = 系统临时文件夹（一般在 C 盘）；整场演唱会每小时约 3 GB，旧的会自动删掉", style="Muted.Card.TLabel").grid(
+        row=12, column=1, columnspan=3, sticky="w", padx=8)
+    ttk.Checkbutton(g_card, text="显卡半精度加速（约快 1.5–2 倍；关掉则和旧版逐位一致）", variable=c_fast).grid(
+        row=13, column=0, columnspan=4, sticky="w", pady=(8, 0))
+    g_saved = ttk.Label(g_card, text="", style="Muted.Card.TLabel")
+    g_saved.grid(row=14, column=1, sticky="w", padx=8, pady=(10, 0))
+
+    def save_prefs():
+        folder = g_temp.get().strip()
+        if folder and not os.path.isdir(folder):
+            messagebox.showwarning(APP_TITLE, "这个文件夹不存在。")
+            return
+        prefs.update(temp_dir=folder, fast=bool(c_fast.get()))
+        concert.set_temp_root(folder or None)
+        concert.save_presets(presets)
+        g_saved.configure(text="已保存")
+        root.after(2500, lambda: g_saved.configure(text=""))
+
+    ttk.Button(g_card, text="保存", style="Primary.TButton", command=save_prefs).grid(row=14, column=0, sticky="w", pady=(10, 0))
+
+    def refresh_settings():
+        g_rows["concert"].configure(text="已安装" if concert.ai_available() else "未安装（约 5 GB）")
+        g_rows["score"].configure(text=("已安装" if transcribe.available() else "未安装（约 300 MB + 模型 1.4 GB）") + " · " +
+                                  ("授权已设置" if transcribe.get_token() else "需要 Hugging Face 授权"))
+        g_rows["voice"].configure(text="已安装" if ai_available() else "未安装（约 26 MB）")
+        g_rows["recorder"].configure(text="已就绪" if helper_available() else "第一次录音时自动准备")
+        root.after(3000, refresh_settings)
+
+    refresh_settings()
+    # 各功能页底部重复的安装/设置按钮统一收进“设置”页，页面更清爽
+    for button in (c_settings_button, c_install_button, s_token_button, s_install_button):
+        button.grid_remove()
+
     # ------------------------------------------------------------- 事件与快捷键
     def finish_recording(raw_path):
         config = state["record_config"]
@@ -1732,6 +1858,7 @@ def main() -> None:
                     update_state["info"] = info
                     if info.get("update"):
                         update_button.configure(text="有新版本 · 点此更新", state="normal")
+                        update_badge.configure(text="● 有新版本")
                     else:
                         update_button.configure(text="已是最新版", state="normal")
                         if not silent:
