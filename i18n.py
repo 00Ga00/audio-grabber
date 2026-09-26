@@ -294,6 +294,8 @@ AI 组件|AI components|KI-Komponenten
 第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
 录音组件|Recorder|Rekorder
 ● 有新版本|● Update available|● Update verfügbar
+按电脑配置推荐|Recommend for this PC|Für diesen PC empfehlen
+已按电脑配置选好处理步骤|Steps chosen for this computer|Schritte für diesen Computer gewählt
 电脑配置|Computer|Computer
 正在检查……|Checking…|Wird geprüft…
 重新检测|Re-check|Neu prüfen
@@ -374,6 +376,13 @@ AI 处理完成|AI finished|KI fertig
 识别到调性：|Key detected: |Erkannte Tonart: 
 （活动）| (activity)| (Aktivität)
 版本 |Version |Version
+推荐组合：|Recommended: |Empfohlen: 
+显卡够强：全部打开（去混响后可以调现场感）；显卡半精度加速|strong GPU: everything on (de-reverb enables the room slider); half-precision GPU|starke GPU: alles an (Enthallung ermöglicht den Raumregler); GPU-Halbpräzision
+显存较小：不做去混响（多一个大模型、最占显存），其余全开；一次只放一个模型|little GPU memory: no de-reverb (one more large model), everything else on; one model at a time|wenig Grafikspeicher: keine Enthallung (ein weiteres großes Modell), sonst alles an; ein Modell zur Zeit
+没有可用的显卡：只去观众声和底噪（最影响听感的两项），其余在 CPU 上太慢|no usable GPU: only crowd and noise removal (the two that matter most), the rest is too slow on CPU|keine nutzbare GPU: nur Publikum und Rauschen entfernen (am wichtigsten), der Rest ist auf der CPU zu langsam
+去观众声|remove crowd|Publikum entfernen
+去底噪|remove noise|Rauschen entfernen
+分离人声和伴奏|split vocals/backing|Gesang/Begleitung trennen
 高配（显卡加速，全部可用）|High-end (GPU, everything available)|Stark (GPU, alles verfügbar)
 中配（显卡加速，显存较小）|Mid-range (GPU with little memory)|Mittel (GPU mit wenig Speicher)
 低配（没有可用的 NVIDIA 显卡，用 CPU）|Low-end (no usable NVIDIA GPU, CPU only)|Schwach (keine nutzbare NVIDIA-GPU, nur CPU)

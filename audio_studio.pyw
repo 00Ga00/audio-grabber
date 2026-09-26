@@ -693,6 +693,8 @@ def main() -> None:
     c_split_box.pack(side="left", padx=(14, 0))
     c_dereverb_box = ttk.Checkbutton(c_opts, text="去混响（可调现场感）", variable=c_dereverb)
     c_dereverb_box.pack(side="left", padx=(14, 0))
+    c_recommend_button = ttk.Button(c_opts, text="按电脑配置推荐", command=lambda: apply_recommended())
+    c_recommend_button.pack(side="left", padx=(14, 0))
     ttk.Checkbutton(c_opts2, text="另存人声、伴奏分轨", variable=c_stems).pack(side="left", padx=(14, 0))
 
     # ---- 调音：滑块 + 频谱可视化
@@ -1819,13 +1821,10 @@ def main() -> None:
             prefs.pop("steps", None)
             prefs["hw_tier"] = tier
             concert.save_presets(presets)
-        chosen = prefs.get("steps") or hardware.DEFAULTS[tier]
+        chosen = prefs.get("steps") or hardware.recommended(info)
         for key, var in (("crowd", c_crowd), ("denoise", c_denoise), ("restore", c_restore), ("split", c_split), ("dereverb", c_dereverb)):
             var.set(bool(chosen.get(key, var.get())))
-        if not prefs.get("score_default_set"):
-            s_size.set(hardware.default_score_size(list(transcribe.SIZES), info))
-            prefs["score_default_set"] = True
-            concert.save_presets(presets)
+        prefs.pop("score_default_set", None)
         for key, var, box in (("restore", c_restore, c_restore_box), ("dereverb", c_dereverb, c_dereverb_box)):
             if key in lock:
                 var.set(False)
@@ -1846,6 +1845,22 @@ def main() -> None:
         closed = [{"restore": "音质修复", "dereverb": "去混响"}[k] for k in ("restore", "dereverb") if k in lock]
         if closed and first:
             c_write("按你的电脑配置，已关闭：" + "、".join(closed) + "（可在“设置”里解除限制）")
+
+    def apply_recommended():
+        info = hw["info"]
+        if info.get("pending"):
+            return
+        combo = hardware.recommended(info)
+        lock = hardware.locks(info, bool(prefs.get("unlocked", False)))
+        names = {"crowd": "去观众声", "denoise": "去底噪", "restore": "音质修复", "split": "分离人声和伴奏", "dereverb": "去混响"}
+        for key, var in (("crowd", c_crowd), ("denoise", c_denoise), ("restore", c_restore), ("split", c_split), ("dereverb", c_dereverb)):
+            var.set(combo[key] and key not in lock)
+        if info.get("tier") != "weak":
+            c_fast.set(True)
+        remember_settings()
+        on = [names[k] for k in names if combo[k] and k not in lock]
+        c_write("推荐组合：" + " + ".join(on) + "（" + hardware.RECOMMEND_NOTES.get(info.get("tier"), "") + "）")
+        c_status.set("已按电脑配置选好处理步骤")
 
     def unlock_changed():
         if g_unlock.get() and not messagebox.askyesno(APP_TITLE, "解除后所有选项都能选，但在这台电脑上可能要很久，或者显存不够而失败。确定吗？"):

@@ -154,12 +154,6 @@ LOCKS = {
 
 LOCK_NAMES = {"restore": "音质修复", "dereverb": "去混响", "stems": "声部音量地图", "score_large": "扒谱大模型", "score_beam": "束搜索"}
 
-# 各档位的默认勾选
-DEFAULTS = {
-    "strong": {"crowd": True, "denoise": True, "restore": True, "split": True, "dereverb": False},
-    "medium": {"crowd": True, "denoise": True, "restore": True, "split": True, "dereverb": False},
-    "weak": {"crowd": True, "denoise": True, "restore": False, "split": False, "dereverb": False},
-}
 
 
 def locks(info: dict, unlocked: bool = False) -> dict:
@@ -180,8 +174,25 @@ def score_sizes(labels: list[str], info: dict, unlocked: bool = False) -> list[s
 
 
 def default_score_size(labels: list[str], info: dict) -> str:
-    """中模型和大模型听感差别不大，默认用中模型（快、凉快）；想要更准可以自己改。"""
-    return next((label for label in labels if "中模型" in label), labels[-1])
+    """这台电脑能用的最准的一档（labels 从准到快排列）。"""
+    return labels[0]
+
+
+# 按配置推荐的修音组合：在这台电脑上效果最好、又不会慢到没法用的处理步骤
+RECOMMENDED = {
+    "strong": {"crowd": True, "denoise": True, "restore": True, "split": True, "dereverb": True},
+    "medium": {"crowd": True, "denoise": True, "restore": True, "split": True, "dereverb": False},
+    "weak": {"crowd": True, "denoise": True, "restore": False, "split": False, "dereverb": False},
+}
+RECOMMEND_NOTES = {
+    "strong": "显卡够强：全部打开（去混响后可以调现场感）；显卡半精度加速",
+    "medium": "显存较小：不做去混响（多一个大模型、最占显存），其余全开；一次只放一个模型",
+    "weak": "没有可用的显卡：只去观众声和底噪（最影响听感的两项），其余在 CPU 上太慢",
+}
+
+
+def recommended(info: dict) -> dict:
+    return dict(RECOMMENDED.get(info.get("tier", "weak"), RECOMMENDED["weak"]))
 
 
 def low_vram(info: dict) -> bool:
