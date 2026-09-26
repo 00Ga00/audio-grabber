@@ -268,7 +268,6 @@ MuseScore：未找到（只导出 MusicXML）|MuseScore: not found (MusicXML onl
 正在分离六个声部……|Separating six stems…|Sechs Spuren werden getrennt…
 正在安装扒谱组件……|Installing transcription…|Transkription wird installiert…
 扒谱组件安装完成|Transcription installed|Transkription installiert
-请先点右下角“安装扒谱组件”。|Please click “Install transcription” (bottom right) first.|Bitte zuerst unten rechts „Transkription installieren“ klicken.
 请至少勾选一个声部。|Please tick at least one part.|Bitte mindestens eine Stimme auswählen.
 Hugging Face 授权|Hugging Face access|Hugging-Face-Zugang
 打开网页|Open web page|Webseite öffnen
@@ -295,6 +294,12 @@ AI 组件|AI components|KI-Komponenten
 第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
 录音组件|Recorder|Rekorder
 ● 有新版本|● Update available|● Update verfügbar
+链接或文件|Link or file|Link oder Datei
+下载与安装进度|Downloads & installs|Downloads & Installation
+只能拖入视频或音频文件。|Only video or audio files can be dropped.|Nur Video- oder Audiodateien können abgelegt werden.
+请先到左下角“设置”里安装扒谱组件。|Please install transcription under “Settings” (bottom left) first.|Bitte zuerst unter „Einstellungen“ (unten links) die Transkription installieren.
+请先在“设置”里安装“演唱会降噪”组件（扒谱和它共用显卡环境）。|Please install “Concert cleanup” in Settings first (transcription shares its GPU environment).|Bitte zuerst in den Einstellungen „Konzert-Bereinigung“ installieren (die Transkription nutzt dieselbe GPU-Umgebung).
+现在没有进行中的下载。安装组件或第一次用某个模型时，这里会显示下载进度和速度。|No download in progress. Progress and speed appear here while installing components or fetching a model for the first time.|Kein Download aktiv. Beim Installieren oder ersten Laden eines Modells erscheinen hier Fortschritt und Geschwindigkeit.
 """
 
 # 动态文字里的片段（f-string 拼出来的状态、日志），按从长到短替换
@@ -364,6 +369,35 @@ AI 处理完成|AI finished|KI fertig
 识别到调性：|Key detected: |Erkannte Tonart: 
 （活动）| (activity)| (Aktivität)
 版本 |Version |Version
+最近 2 分钟下载速度 · 最高 |Download speed, last 2 min · peak |Download-Tempo, letzte 2 Min. · max. 
+⬇ 下载中|⬇ Downloading|⬇ Lädt
+ · 剩余约 | · about | · noch ca. 
+等待数据…|waiting for data…|warte auf Daten…
+准备中…|Preparing…|Vorbereitung…
+下载模型|Downloading model|Modell wird geladen
+最近一次|Last run|Zuletzt
+已结束|finished|beendet
+ 下载完成| downloaded| geladen
+模型下载完成|Model downloaded|Modell geladen
+模型下载中断|Model download interrupted|Modell-Download abgebrochen
+安装失败|Installation failed|Installation fehlgeschlagen
+安装扒谱组件|Install transcription|Transkription installieren
+安装演唱会降噪组件|Installing concert cleanup|Konzert-Bereinigung wird installiert
+安装 AI 人声增强|Installing AI voice enhance|KI-Sprachverbesserung wird installiert
+扒谱组件安装完成|Transcription installed|Transkription installiert
+演唱会降噪组件安装完成|Concert cleanup installed|Konzert-Bereinigung installiert
+AI 人声增强安装完成|AI voice enhance installed|KI-Sprachverbesserung installiert
+扒谱模型|transcription model|Transkriptionsmodell
+节拍模型|beat model|Beat-Modell
+六轨分离模型|6-stem model|6-Spur-Modell
+音质修复模型|restoration model|Restaurierungsmodell
+已选择本地文件：|Local file selected: |Lokale Datei gewählt: 
+点“开始提取”就保存成上面选的音频格式（不用联网）。|Click “Start” to save it in the format above (no internet needed).|„Start“ klicken, um im obigen Format zu speichern (ohne Internet).
+已选择：|Selected: |Ausgewählt: 
+本地文件：|Local file: |Lokale Datei: 
+ 小时 | h | Std. 
+ 分 | min | Min. 
+ 秒| s| s
 """
 
 

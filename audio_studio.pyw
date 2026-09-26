@@ -100,6 +100,8 @@ def main() -> None:
     nav_top.pack(fill="x")
     nav_bottom = tk.Frame(sidebar, background=SIDE_BG)
     nav_bottom.pack(side="bottom", fill="x", pady=(0, 14))
+    # 下载进度（安装组件、下载模型时出现，点一下去“设置”看详细）
+    side_transfer = tk.Canvas(nav_bottom, background=SIDE_BG, highlightthickness=0, height=int(40 * scale), cursor="hand2")
     update_badge = tk.Label(nav_bottom, text="", background=SIDE_BG, foreground="#ffd479", cursor="hand2",
                             font=("Microsoft YaHei UI", 8, "bold"))
     update_badge.pack(anchor="w", padx=18, pady=(0, 6))
@@ -236,7 +238,7 @@ def main() -> None:
     d_last = {"path": None}
 
     ttk.Label(download_card, text="从视频保存音频", style="Card.TLabel", font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
-    ttk.Label(download_card, text="视频链接", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=5)
+    ttk.Label(download_card, text="链接或文件", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=5)
     ttk.Entry(download_card, textvariable=d_url).grid(row=1, column=1, sticky="ew", padx=8)
 
     def paste_url():
@@ -295,7 +297,8 @@ def main() -> None:
         if state["download_busy"]:
             return
         try:
-            url = core.validate_url(d_url.get())
+            url = d_url.get().strip().strip('"')
+            url = url if os.path.isfile(url) else core.validate_url(url)   # 本地视频也可以（拖进来或粘贴路径）
             start_at = end_at = None
             if d_clip.get():
                 start_at, end_at = core.parse_time(d_start.get()), core.parse_time(d_end.get())
@@ -577,11 +580,12 @@ def main() -> None:
         e_status.set("正在安装 AI 组件……")
 
         def worker():
+            concert.TRANSFER.begin("安装 AI 人声增强")
             try:
-                install_ai(lambda text: events.put(("enhance_log", text)))
-                events.put(("ai_done", None))
+                install_ai(lambda text: (concert.TRANSFER.note(text), events.put(("enhance_log", text))))
+                events.put(("ai_done", None)); concert.TRANSFER.end("AI 人声增强安装完成")
             except Exception as error:
-                events.put(("ai_error", str(error)))
+                events.put(("ai_error", str(error))); concert.TRANSFER.end("安装失败")
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1087,11 +1091,12 @@ def main() -> None:
         c_progress.configure(mode="indeterminate"); c_progress.start(12)
 
         def worker():
+            concert.TRANSFER.begin("安装演唱会降噪组件")
             try:
-                concert.install_ai(lambda text: events.put(("concert_log", text)))
-                events.put(("concert_install_done", None))
+                concert.install_ai(lambda text: (concert.TRANSFER.note(text), events.put(("concert_log", text))))
+                events.put(("concert_install_done", None)); concert.TRANSFER.end("演唱会降噪组件安装完成")
             except Exception as error:
-                events.put(("concert_install_error", str(error)))
+                events.put(("concert_install_error", str(error))); concert.TRANSFER.end("安装失败")
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1498,7 +1503,7 @@ def main() -> None:
             messagebox.showwarning(APP_TITLE, "请先选择一个视频或音频文件。")
             return
         if not transcribe.available():
-            messagebox.showinfo(APP_TITLE, "请先点右下角“安装扒谱组件”。")
+            messagebox.showinfo(APP_TITLE, "请先到左下角“设置”里安装扒谱组件。"); notebook.select(settings_tab)
             return
         if not transcribe.get_token():
             open_token_dialog()
@@ -1607,17 +1612,18 @@ def main() -> None:
         if state.get("score_busy"):
             return
         if not concert.ai_available():
-            messagebox.showinfo(APP_TITLE, "请先在“演唱会降噪”页安装 AI 组件（扒谱和它共用显卡环境）。")
+            messagebox.showinfo(APP_TITLE, "请先在“设置”里安装“演唱会降噪”组件（扒谱和它共用显卡环境）。")
             return
         set_score_busy(True)
         s_status.set("正在安装扒谱组件……")
 
         def worker():
+            concert.TRANSFER.begin("安装扒谱组件")
             try:
-                transcribe.install(score_log)
-                events.put(("score_installed", None))
+                transcribe.install(lambda text: (concert.TRANSFER.note(text), score_log(text)))
+                events.put(("score_installed", None)); concert.TRANSFER.end("扒谱组件安装完成")
             except Exception as error:
-                events.put(("score_error", str(error)))
+                events.put(("score_error", str(error))); concert.TRANSFER.end("安装失败")
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1701,19 +1707,21 @@ def main() -> None:
     ttk.Button(g_card, text="安装 / 重新安装", command=install_score).grid(row=6, column=2, sticky="e")
     ttk.Button(g_card, text="Hugging Face 授权…", command=open_token_dialog).grid(row=6, column=3, sticky="e", padx=(6, 0))
     ttk.Button(g_card, text="安装 / 重新安装", command=install_ai_clicked).grid(row=7, column=2, sticky="e")
-    ttk.Label(g_card, text="安装进度会显示在对应的功能页里", style="Muted.Card.TLabel").grid(row=9, column=0, columnspan=4, sticky="w")
+    section(10, "下载与安装进度")
+    g_transfer = tk.Canvas(g_card, background="#f7f9fc", highlightthickness=0, height=int(150 * scale))
+    g_transfer.grid(row=11, column=0, columnspan=4, sticky="ew")
 
-    section(10, "处理")
-    ttk.Label(g_card, text="中间文件位置", style="Card.TLabel").grid(row=11, column=0, sticky="w", pady=3)
+    section(12, "处理")
+    ttk.Label(g_card, text="中间文件位置", style="Card.TLabel").grid(row=13, column=0, sticky="w", pady=3)
     g_temp = tk.StringVar(value=prefs.get("temp_dir", ""))
-    ttk.Entry(g_card, textvariable=g_temp).grid(row=11, column=1, sticky="ew", padx=8)
-    ttk.Button(g_card, text="浏览…", command=lambda: g_temp.set(filedialog.askdirectory() or g_temp.get())).grid(row=11, column=2, sticky="e")
+    ttk.Entry(g_card, textvariable=g_temp).grid(row=13, column=1, sticky="ew", padx=8)
+    ttk.Button(g_card, text="浏览…", command=lambda: g_temp.set(filedialog.askdirectory() or g_temp.get())).grid(row=13, column=2, sticky="e")
     ttk.Label(g_card, text="留空 = 系统临时文件夹（一般在 C 盘）；整场演唱会每小时约 3 GB，旧的会自动删掉", style="Muted.Card.TLabel").grid(
-        row=12, column=1, columnspan=3, sticky="w", padx=8)
+        row=14, column=1, columnspan=3, sticky="w", padx=8)
     ttk.Checkbutton(g_card, text="显卡半精度加速（约快 1.5–2 倍；关掉则和旧版逐位一致）", variable=c_fast).grid(
-        row=13, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        row=15, column=0, columnspan=4, sticky="w", pady=(8, 0))
     g_saved = ttk.Label(g_card, text="", style="Muted.Card.TLabel")
-    g_saved.grid(row=14, column=1, sticky="w", padx=8, pady=(10, 0))
+    g_saved.grid(row=16, column=1, sticky="w", padx=8, pady=(10, 0))
 
     def save_prefs():
         folder = g_temp.get().strip()
@@ -1726,7 +1734,7 @@ def main() -> None:
         g_saved.configure(text="已保存")
         root.after(2500, lambda: g_saved.configure(text=""))
 
-    ttk.Button(g_card, text="保存", style="Primary.TButton", command=save_prefs).grid(row=14, column=0, sticky="w", pady=(10, 0))
+    ttk.Button(g_card, text="保存", style="Primary.TButton", command=save_prefs).grid(row=16, column=0, sticky="w", pady=(10, 0))
 
     def refresh_settings():
         g_rows["concert"].configure(text="已安装" if concert.ai_available() else "未安装（约 5 GB）")
@@ -1737,6 +1745,108 @@ def main() -> None:
         root.after(3000, refresh_settings)
 
     refresh_settings()
+
+    def fmt_bytes(n):
+        return f"{n / 1e9:.2f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB" if n >= 1e6 else f"{n / 1e3:.0f} KB"
+
+    def fmt_eta(sec):
+        sec = int(sec)
+        return f"{sec // 3600} 小时 {sec % 3600 // 60} 分" if sec >= 3600 else f"{sec // 60} 分 {sec % 60} 秒" if sec >= 60 else f"{sec} 秒"
+
+    def speed_series(samples, now, span=120, step=2):
+        """累计字节 → 每 step 秒的平均速度，最近 span 秒。"""
+        out = []
+        for i in range(span // step):
+            t1 = now - span + (i + 1) * step
+            t0 = t1 - step
+            before = [b for t, b in samples if t <= t0]
+            upto = [b for t, b in samples if t <= t1]
+            if not upto or not before:
+                out.append(0.0)
+            else:
+                out.append(max(upto[-1] - before[-1], 0) / step)
+        return out
+
+    def draw_transfer_panel(snap):
+        c = g_transfer
+        c.delete("all")
+        w, h = max(c.winfo_width(), 300), max(c.winfo_height(), 120)
+        pad = 12
+        busy = snap["active"]
+        title = snap["task"] or ("下载模型" if busy else "")
+        if not busy and not snap["finished"] and not snap["status"]:
+            c.create_text(w / 2, h / 2, text="现在没有进行中的下载。安装组件或第一次用某个模型时，这里会显示下载进度和速度。",
+                          fill="#8a94a6", font=("Microsoft YaHei UI", 9), width=w - 40, justify="center")
+            return
+        c.create_text(pad, 14, anchor="w", text=(title or "最近一次") + ("" if busy else " · " + (snap["status"] or "已结束")),
+                      fill="#1f2a3d", font=("Microsoft YaHei UI", 10, "bold"))
+        # 当前文件 + 进度条
+        done, total, speed = snap["done"], snap["total"], snap["speed"]
+        if busy and snap["name"]:
+            frac = done / total if total else 0
+            left = f"{snap['name']}  {fmt_bytes(done)} / {fmt_bytes(total)}（{frac * 100:.0f}%）" if total else snap["name"]
+            right = (f"{speed / 1e6:.1f} MB/s" if speed > 0 else "等待数据…") + (f" · 剩余约 {fmt_eta((total - done) / speed)}" if speed > 0 and total else "")
+            c.create_text(pad, 36, anchor="w", text=left, fill="#1f2a3d", font=("Microsoft YaHei UI", 9))
+            c.create_text(w - pad, 36, anchor="e", text=right, fill="#4c5a70", font=("Microsoft YaHei UI", 9))
+            c.create_rectangle(pad, 48, w - pad, 58, fill="#e3e9f2", outline="")
+            c.create_rectangle(pad, 48, pad + (w - 2 * pad) * min(frac, 1), 58, fill=ACCENT, outline="")
+        elif busy:
+            c.create_text(pad, 36, anchor="w", text=(snap["status"] or "准备中…")[:120], fill="#4c5a70", font=("Microsoft YaHei UI", 9))
+        # 速度曲线（最近 2 分钟）
+        top, bottom = 68, h - 30
+        series = speed_series(snap["samples"], time.time())
+        peak = max(series + [1e5])
+        c.create_line(pad, bottom, w - pad, bottom, fill="#d5dce7")
+        c.create_text(pad, top - 2, anchor="nw", text=f"最近 2 分钟下载速度 · 最高 {peak / 1e6:.1f} MB/s", fill="#8a94a6", font=("Microsoft YaHei UI", 8))
+        if any(series):
+            step = (w - 2 * pad) / max(len(series) - 1, 1)
+            points = [pad, bottom]
+            for i, v in enumerate(series):
+                points += [pad + i * step, bottom - (bottom - top - 14) * v / peak]
+            points += [w - pad, bottom]
+            c.create_polygon(points, fill="#cfe0ff", outline="")
+            c.create_line(points[2:-2], fill=ACCENT, width=2, smooth=True)
+        # 已完成的文件
+        finished = "   ".join(f"✓ {name} {fmt_bytes(size)}" for name, size in snap["finished"][-4:])
+        status = snap["status"] if busy else ""
+        c.create_text(pad, h - 12, anchor="w", text=(finished or status)[:160], fill="#3f8f5a" if finished else "#8a94a6",
+                      font=("Microsoft YaHei UI", 8))
+
+    def draw_side_transfer(snap):
+        c = side_transfer
+        recent = time.time() - snap["updated"] < 8
+        if not snap["active"] and not (recent and snap["status"]):
+            if c.winfo_ismapped():
+                c.pack_forget()
+            return
+        if not c.winfo_ismapped():
+            c.pack(fill="x", padx=14, pady=(0, 8), before=update_badge)
+        c.delete("all")
+        w = max(c.winfo_width(), 120)
+        if snap["active"]:
+            frac = snap["done"] / snap["total"] if snap["total"] else 0
+            text = "⬇ 下载中" + (f" {frac * 100:.0f}%" if snap["total"] else "") + (f" · {snap['speed'] / 1e6:.1f} MB/s" if snap["speed"] > 0 else "")
+            c.create_text(4, 10, anchor="w", text=text, fill="#ffffff", font=("Microsoft YaHei UI", 8, "bold"))
+            c.create_rectangle(4, 22, w - 4, 27, fill="#2b3b58", outline="")
+            if snap["total"]:
+                c.create_rectangle(4, 22, 4 + (w - 8) * min(frac, 1), 27, fill=ACCENT, outline="")
+            c.create_text(4, 35, anchor="w", text=(snap["name"] or snap["task"])[:22], fill=SIDE_MUTED, font=("Microsoft YaHei UI", 7))
+        else:
+            c.create_text(4, 12, anchor="w", text="✓ " + snap["status"][:18], fill="#8fe3a8", font=("Microsoft YaHei UI", 8, "bold"))
+
+    side_transfer.bind("<Button-1>", lambda _e: notebook.select(settings_tab))
+
+    def tick_transfer():
+        try:
+            snap = concert.TRANSFER.snapshot()
+            draw_side_transfer(snap)
+            if notebook.current is settings_tab:
+                draw_transfer_panel(snap)
+        except Exception:
+            pass
+        root.after(500, tick_transfer)
+
+    tick_transfer()
     # 各功能页底部重复的安装/设置按钮统一收进“设置”页，页面更清爽
     for button in (c_settings_button, c_install_button, s_token_button, s_install_button):
         button.grid_remove()
@@ -1890,7 +2000,17 @@ def main() -> None:
                     root.bell()
                 elif kind == "dropped":
                     media = [f for f in value if os.path.splitext(f)[1].lower() in concert.MEDIA_EXTENSIONS]
-                    if media:
+                    page = notebook.current
+                    if not media:
+                        messagebox.showinfo(APP_TITLE, "只能拖入视频或音频文件。")
+                    elif page is download_tab:
+                        d_url.set(media[0])
+                        d_write("已选择本地文件：" + media[0] + "\n点“开始提取”就保存成上面选的音频格式（不用联网）。")
+                    elif page is score_tab:
+                        s_input.set(media[0]); s_status.set("已选择：" + os.path.basename(media[0]))
+                    elif page is enhance_tab:
+                        e_input.set(media[0]); e_status.set("已选择：" + os.path.basename(media[0]))
+                    else:
                         notebook.select(concert_tab)
                         load_concert_file(media[0])
                         if len(media) > 1:

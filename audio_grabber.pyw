@@ -225,22 +225,28 @@ def run_job(opts: dict, log, progress, cancel_event: threading.Event) -> str:
         elif opts["login"] != LOGIN_NONE:
             ydl_options["cookiesfrombrowser"] = (opts["login"].lower(),)
 
-        log("正在解析链接……")
-        with yt_dlp.YoutubeDL(ydl_options) as downloader:
-            info = downloader.extract_info(opts["url"], download=True)
-        if cancel_event.is_set():
-            raise CancelledError("任务已取消。")
-        if info.get("entries"):
-            info = next((entry for entry in info["entries"] if entry), info)
+        if os.path.isfile(opts["url"]):
+            # 本地视频/音频文件（拖进窗口或粘贴路径）：不用下载，直接取出音频
+            source = opts["url"]
+            info = {"title": os.path.splitext(os.path.basename(source))[0]}
+            log("本地文件：" + source)
+        else:
+            log("正在解析链接……")
+            with yt_dlp.YoutubeDL(ydl_options) as downloader:
+                info = downloader.extract_info(opts["url"], download=True)
+            if cancel_event.is_set():
+                raise CancelledError("任务已取消。")
+            if info.get("entries"):
+                info = next((entry for entry in info["entries"] if entry), info)
 
-        source_files = [
-            filename
-            for filename in glob.glob(os.path.join(temp_dir, "source.*"))
-            if not filename.endswith((".part", ".ytdl"))
-        ]
-        if not source_files:
-            raise RuntimeError("下载失败：没有得到音频文件。")
-        source = max(source_files, key=os.path.getsize)
+            source_files = [
+                filename
+                for filename in glob.glob(os.path.join(temp_dir, "source.*"))
+                if not filename.endswith((".part", ".ytdl"))
+            ]
+            if not source_files:
+                raise RuntimeError("下载失败：没有得到音频文件。")
+            source = max(source_files, key=os.path.getsize)
         source_ext = os.path.splitext(source)[1].lstrip(".").lower()
 
         output_format = opts["format"]
@@ -248,7 +254,9 @@ def run_job(opts: dict, log, progress, cancel_event: threading.Event) -> str:
             extension = output_format
             codec_args = CODEC_ARGS[output_format][opts["quality"]]
         else:
-            extension = {"webm": "opus", "mp4": "m4a"}.get(source_ext, source_ext)
+            extension = {"webm": "opus", "mp4": "m4a", "mov": "m4a", "m4v": "m4a", "3gp": "m4a"}.get(source_ext, source_ext)
+            if extension in ("mkv", "avi", "flv", "ts", "wmv", "mpg", "mpeg", "m2ts", "mts", "vob", "rm", "rmvb"):
+                extension = "mka"   # 视频容器里的音频编码不确定，放进万能的 mka，不转码
             codec_args = ["-c:a", "copy"]
 
         title = info.get("title") or "audio"

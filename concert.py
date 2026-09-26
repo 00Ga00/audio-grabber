@@ -13,6 +13,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -30,7 +32,7 @@ STRENGTHS = {              # 名称 → 处理后声音所占比例（其余为�
     "标准（推荐）": 0.9,
     "最强": 1.0,
 }
-MEDIA_TYPES = [("视频或音频", "*.mp4 *.mov *.mkv *.m4v *.avi *.webm *.flv *.mts *.m2ts *.3gp *.wav *.flac *.mp3 *.m4a *.aac *.ogg *.opus"),
+MEDIA_TYPES = [("视频或音频", "*.mp4 *.mov *.mkv *.m4v *.avi *.webm *.flv *.mts *.m2ts *.3gp *.ts *.wmv *.mka *.wma *.wav *.flac *.mp3 *.m4a *.aac *.ogg *.opus"),
                ("所有文件", "*.*")]
 MEDIA_EXTENSIONS = {"." + ext.split(".")[-1] for ext in MEDIA_TYPES[0][1].split()}
 
@@ -45,15 +47,123 @@ def ai_available() -> bool:
     return READY_FLAG.is_file() and ai_python().is_file()
 
 
+class Transfer:
+    """所有下载（pip 安装包、AI 模型）的进度汇总，界面每隔一会儿读一次画出来。线程安全。"""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.reset()
+
+    def reset(self):
+        with self.lock:
+            self.task = ""            # 正在做的事（例如“安装扒谱组件”）
+            self.name, self.done, self.total = "", 0, 0
+            self.finished = []        # [(名字, 字节数)]
+            self.samples = []         # [(时间, 累计字节)] 用来算速度和画速度曲线
+            self.bytes_before = 0     # 已完成文件的字节数
+            self.status = ""
+            self.active = False
+            self.updated = time.time()
+
+    def begin(self, task: str):
+        self.reset()
+        with self.lock:
+            self.task, self.active = task, True
+
+    def end(self, status: str = ""):
+        with self.lock:
+            self._close_item()
+            self.active, self.name = False, ""
+            self.status = status
+            self.updated = time.time()
+
+    def _close_item(self):
+        if self.name and self.total:
+            self.finished = (self.finished + [(self.name, self.total)])[-8:]
+            self.bytes_before += self.total
+        self.name, self.done, self.total = "", 0, 0
+
+    def update(self, name: str, done: int, total: int):
+        with self.lock:
+            if name != self.name:
+                self._close_item()
+                self.name = name
+            self.done, self.total = int(done), int(total or 0)
+            self.active = True
+            now = time.time()
+            self.samples = [x for x in self.samples if now - x[0] < 120] + [(now, self.bytes_before + self.done)]
+            self.updated = now
+            if self.total and self.done >= self.total:
+                finished_name = self.name
+                self._close_item()
+                if not self.task:     # 处理途中顺便下载的模型：下完就收起
+                    self.active, self.status = False, finished_name + " 下载完成"
+
+    def note(self, text: str):
+        with self.lock:
+            self.status = text[-200:]
+            self.updated = time.time()
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            now = time.time()
+            recent = [x for x in self.samples if now - x[0] < 4]
+            speed = 0.0
+            if len(recent) >= 2 and recent[-1][0] > recent[0][0]:
+                speed = (recent[-1][1] - recent[0][1]) / max(now - recent[0][0], 0.5)
+            if self.samples and now - self.samples[-1][0] > 6:
+                speed = 0.0
+            return {"task": self.task, "name": self.name, "done": self.done, "total": self.total, "speed": speed,
+                    "finished": list(self.finished), "samples": list(self.samples), "status": self.status,
+                    "active": self.active, "updated": self.updated}
+
+
+TRANSFER = Transfer()
+_PIP_RAW: dict[str, bool] = {}
+
+
+def _pip_supports_raw(python: str) -> bool:
+    """pip 24.1 起支持 --progress-bar raw（逐行输出“Progress 已下载 of 总数”），用来画下载进度。"""
+    if python not in _PIP_RAW:
+        try:
+            out = subprocess.run([python, "-m", "pip", "--version"], capture_output=True, text=True,
+                                 creationflags=NO_WINDOW, timeout=30).stdout
+            major, minor = (int(x) for x in re.search(r"pip (\d+)\.(\d+)", out).groups())
+            _PIP_RAW[python] = (major, minor) >= (24, 1)
+        except Exception:
+            _PIP_RAW[python] = False
+    return _PIP_RAW[python]
+
+
+def _pip_name(filename: str) -> str:
+    """torch-2.14.0+cu130-cp312-...whl → torch 2.14.0"""
+    parts = filename.split("/")[-1].split("-")
+    return f"{parts[0]} {parts[1]}" if len(parts) > 1 else filename
+
+
 def _run_stream(command: list[str], log, env=None) -> int:
-    """运行命令并把输出逐行交给 log（pip 的进度等）。"""
+    """运行命令并把输出逐行交给 log；pip 安装时顺便把下载进度交给 TRANSFER。"""
+    is_pip = "pip" in command and "install" in command
+    if is_pip and _pip_supports_raw(command[0]):
+        at = command.index("install") + 1
+        command = command[:at] + ["--progress-bar", "raw"] + command[at:]
     process = subprocess.Popen(
         command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         encoding="utf-8", errors="replace", creationflags=NO_WINDOW, env=env,
     )
     assert process.stdout
+    current = ""
     for line in process.stdout:
         line = line.rstrip()
+        match = re.match(r"\s*Progress (\d+) of (\d+)", line)
+        if match:
+            TRANSFER.update(current or "下载中", int(match.group(1)), int(match.group(2)))
+            continue
+        match = re.match(r"\s*Downloading (\S+)", line)
+        if match and not match.group(1).endswith(".metadata"):
+            current = _pip_name(match.group(1))
+        if is_pip and line.strip():
+            TRANSFER.note(line.strip())
         if line and not line.startswith("  ") and "━" not in line:
             log(line[-300:])
     return process.wait()
@@ -321,6 +431,8 @@ def run_worker(args: list[str], on_event, on_log=None, script: Path | None = Non
             except ValueError:
                 event = None
             if event:
+                if event.get("type") == "download":
+                    TRANSFER.update(event.get("name", "") or "模型", event.get("done", 0), event.get("total", 0))
                 if event.get("type") == "done":
                     done = event
                 elif event.get("type") == "error":
@@ -332,6 +444,8 @@ def run_worker(args: list[str], on_event, on_log=None, script: Path | None = Non
             on_log(line)
     code = process.wait()
     _RUNNING["process"] = None
+    if TRANSFER.active and not TRANSFER.task:
+        TRANSFER.end("模型下载中断" if code else "模型下载完成")
     if _RUNNING["cancelled"]:
         raise Cancelled()
     if error:
@@ -598,7 +712,7 @@ def run_ai(source: str, ffmpeg: str, steps: list[str], preview_start: float | No
     import uuid
 
     if not ai_available():
-        raise RuntimeError("演唱会降噪组件还没有安装。请先点“安装演唱会降噪组件”。")
+        raise RuntimeError("演唱会降噪组件还没有安装。请先到左下角“设置”里安装。")
     _RUNNING["cancelled"] = False
     info = probe(ffmpeg, source)
     preview = preview_start is not None

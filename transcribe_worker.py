@@ -59,8 +59,11 @@ def transcribe(path: str, out: str, size: str, beam: int, instruments: list[str]
         size = "medium"
         emit("notice", message="没有显卡，自动改用中等模型。")
     emit("progress", stage="加载扒谱模型（第一次会下载，大模型约 1.4 GB）", fraction=0.01)
+    import concert_worker as cw
+    cw.hook_byte_downloads(f"MuScriptor 扒谱模型（{size}）")
     model = TranscriptionModel.load_model(weights_path=size, device="cuda" if gpu else "cpu")
     emit("progress", stage="找节拍和小节线（Beat This!）", fraction=0.04)
+    cw.DOWNLOAD_NAME["name"] = "Beat This! 节拍模型"
     grid = model.detect_beat_grid_for(path, "best-effort")
     if grid is None:
         emit("notice", message="没找到稳定的节拍，按自由节奏记谱（小节线可能不准）。")
@@ -356,6 +359,7 @@ def stems(path: str, out_json: str, models_dir: str) -> None:
     import concert_worker as cw
 
     cw._install_hooks()
+    cw.hook_byte_downloads("BS-Roformer SW 六轨分离模型")
     with tempfile.TemporaryDirectory(prefix="stems_") as tmp:
         if not os.path.isfile(os.path.join(models_dir, STEM_MODEL)):
             emit("notice", message="第一次使用，正在下载六轨分离模型（BS-Roformer SW）……")

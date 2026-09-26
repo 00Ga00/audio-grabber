@@ -193,8 +193,56 @@ def _fetch(url: str, part: str) -> None:
             done += len(chunk)
             if total:
                 emit("progress", stage=f"下载音质修复模型 {done >> 20}/{total >> 20} MB", fraction=done / total)
+                emit("download", name="Apollo 音质修复模型", done=done, total=total)
     if total and done != total:
         raise RuntimeError("没有下载完整")
+
+
+DOWNLOAD_NAME = {"name": "模型"}
+
+
+def hook_byte_downloads(default_name: str | None = None) -> None:
+    """Hugging Face、torch.hub 下载模型时用的都是 tqdm（单位 B）；接管它，把字节进度发给界面。"""
+    import time as _time
+
+    if default_name:
+        DOWNLOAD_NAME["name"] = default_name
+    try:
+        from tqdm import std
+    except Exception:
+        return
+    if getattr(std.tqdm, "_studio_hooked", False):
+        return
+    original = std.tqdm.update
+    original_init = std.tqdm.__init__
+    last = {"t": 0.0}
+
+    def init(self, *args, **kwargs):
+        # 关掉显示的 tqdm 不会记 unit/desc，这里自己记一份
+        self._studio = (kwargs.get("unit", ""), kwargs.get("desc", "") or "", kwargs.get("total"))
+        original_init(self, *args, **kwargs)
+
+    def update(self, n=1):
+        result = original(self, n)
+        try:
+            unit, desc, total = getattr(self, "_studio", ("", "", None))
+            unit = getattr(self, "unit", "") or unit
+            total = getattr(self, "total", None) or total
+            if unit == "B" and total:
+                self._studio_n = getattr(self, "_studio_n", 0) + (n or 0)
+                done = max(getattr(self, "n", 0) or 0, self._studio_n)
+                now = _time.time()
+                if now - last["t"] > 0.3 or done >= total:
+                    last["t"] = now
+                    name = (getattr(self, "desc", "") or desc or "").strip(" :") or DOWNLOAD_NAME["name"]
+                    emit("download", name=name, done=int(done), total=int(total))
+        except Exception:
+            pass
+        return result
+
+    std.tqdm.update = update
+    std.tqdm.__init__ = init
+    std.tqdm._studio_hooked = True
 
 
 class ApolloRestorer:
