@@ -446,7 +446,7 @@ def stems(path: str, out_json: str, models_dir: str) -> None:
     emit("done", output=out_json)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--transcribe")
     parser.add_argument("--check-model")
@@ -460,7 +460,7 @@ def main() -> int:
     parser.add_argument("--parallel", type=int, default=1)
     parser.add_argument("--overlap", type=int, default=None)
     parser.add_argument("--instruments", default="")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:

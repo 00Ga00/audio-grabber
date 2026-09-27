@@ -69,6 +69,7 @@ def install(log=lambda _m: None) -> None:
     """在已有的 AI 环境里装扒谱组件（MuScriptor + music21，约 300 MB，模型第一次用时再下载）。"""
     if not concert.ai_available():
         raise RuntimeError("请先在“演唱会降噪”页安装 AI 组件（扒谱和它共用显卡环境）。")
+    concert._stop_server()   # 常驻 AI 进程占着文件时 Windows 上装不上
     py = [str(concert.ai_python())]
     log("正在安装扒谱组件（MuScriptor、Beat This!、music21）……")
     if concert._run_stream(py + ["-m", "pip", "install", "--disable-pip-version-check", "muscriptor", "music21", "mido"], log) != 0:
@@ -115,9 +116,15 @@ def prepare_audio(source: str, ffmpeg: str, clean: bool, folder: Path, log, prog
     """扒谱前的音频：44.1 kHz 立体声；可选先用演唱会降噪去掉观众声和底噪（识别会更准）；可以只取一段。"""
     target = str(folder / "input.wav")
     if clean:
-        session = concert.run_ai(source, ffmpeg, ["crowd", "denoise"], preview_start=start,
-                                 preview_length=length or 30.0, log=log, kind_name="score",
-                                 progress=lambda f, s="": progress(0.35 * f, s))
+        # 扒谱前的清理用“快速分离”（快约 1.9 倍）：差别约 −38 dB，对识别音符没有影响
+        saved = concert.SPEED.get("overlap")
+        concert.SPEED["overlap"] = 2
+        try:
+            session = concert.run_ai(source, ffmpeg, ["crowd", "denoise"], preview_start=start,
+                                     preview_length=length or 30.0, log=log, kind_name="score",
+                                     progress=lambda f, s="": progress(0.35 * f, s))
+        finally:
+            concert.SPEED["overlap"] = saved
         concert.render(ffmpeg, session, dict(concert.DEFAULT_SETTINGS, strength=1.0, auto=0.0, air=0.0, loudness="off"),
                        target, ["-c:a", "pcm_f32le"])
     else:

@@ -308,6 +308,7 @@ def installed_edition() -> str | None:
 
 def install_ai(log=lambda _message: None, edition: str = "standard", repair: bool = False) -> None:
     """按版本安装演唱会降噪的 AI 环境和模型（之后不需要联网）。已装好时只补下缺的模型（升级版本）。"""
+    _stop_server()   # 常驻 AI 进程占着 PyTorch 的文件，Windows 上会让重装失败
     if ai_available() and not repair:
         _download_edition(edition, log)
         return
@@ -459,6 +460,8 @@ def cancel() -> None:
             process.kill()
         except OSError:
             pass
+    if process is not None and process is _SERVER["process"]:
+        _SERVER["process"] = None       # 常驻进程被杀掉了，下次重新启动
 
 
 SPEED = {"overlap": None}   # 设置页“快速分离”：2；None = 模型默认（4）
@@ -493,17 +496,86 @@ def _write_perf(script, args: list[str], perf: dict, ok: bool) -> None:
         pass
 
 
+# 常驻 AI 进程：载入 PyTorch 等要 10–30 秒（实测 Windows 上约 30 秒），以前每次处理都要重来一遍。
+# 现在第一次用时启动一个常驻进程，之后的任务（试听、整段、扒谱、声部地图）直接交给它；闲置 10 分钟自动退出。
+_SERVER = {"process": None, "env": None, "lock": threading.Lock()}
+SERVER_IDLE_SECONDS = 600
+
+
+def _server_env_key(env: dict) -> tuple:
+    return tuple(env.get(k, "") for k in ("HF_TOKEN", "HF_ENDPOINT", "PATH"))
+
+
+def _get_server(env: dict):
+    """返回活着的常驻进程（没有就启动一个）；启动失败返回 None（退回每次单独启动）。"""
+    process = _SERVER["process"]
+    if process is not None and (process.poll() is not None or _SERVER["env"] != _server_env_key(env)):
+        _stop_server()
+        process = None
+    if process is None:
+        try:
+            process = subprocess.Popen(
+                [str(ai_python()), "-u", str(WORKER), "--serve", str(SERVER_IDLE_SECONDS)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                encoding="utf-8", errors="replace", creationflags=NO_WINDOW, cwd=str(HERE), env=env,
+            )
+        except OSError:
+            return None
+        _SERVER["process"], _SERVER["env"] = process, _server_env_key(env)
+    return process
+
+
+def _stop_server() -> None:
+    process = _SERVER["process"]
+    _SERVER["process"] = None
+    if process is not None and process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def warm_up() -> None:
+    """提前在后台启动常驻 AI 进程（用户选文件时调用），真正开始处理时就不用等载入。"""
+    if not ai_available():
+        return
+
+    def start():
+        with _SERVER["lock"]:
+            _get_server(_worker_env())
+
+    threading.Thread(target=start, daemon=True).start()
+
+
 def run_worker(args: list[str], on_event, on_log=None, script: Path | None = None) -> dict:
-    """运行 AI 进程，把 JSON 事件交给 on_event；返回 done 事件，失败时抛出异常。"""
+    """运行 AI 任务，把 JSON 事件交给 on_event；返回 done 事件，失败时抛出异常。
+    优先交给常驻进程；常驻进程不可用时退回单独启动一个进程。"""
     if _RUNNING["cancelled"]:
         raise Cancelled()
+    env = _worker_env()
+    with _SERVER["lock"]:
+        server = _get_server(env)
+        if server is not None:
+            try:
+                job = {"script": Path(script or WORKER).stem, "args": args}
+                server.stdin.write(json.dumps(job, ensure_ascii=False) + "\n")
+                server.stdin.flush()
+            except (OSError, ValueError):
+                _stop_server()
+                server = None
+        if server is not None:
+            return _read_events(server, args, on_event, on_log, script, persistent=True)
     process = subprocess.Popen(
         [str(ai_python()), "-u", str(script or WORKER)] + args,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        encoding="utf-8", errors="replace", creationflags=NO_WINDOW, cwd=str(HERE), env=_worker_env(),
+        encoding="utf-8", errors="replace", creationflags=NO_WINDOW, cwd=str(HERE), env=env,
     )
+    return _read_events(process, args, on_event, on_log, script, persistent=False)
+
+
+def _read_events(process, args, on_event, on_log, script, persistent: bool) -> dict:
     _RUNNING["process"] = process
-    done, error, tail = None, None, []
+    done, error, tail, code = None, None, [], None
     perf = {"began": time.time(), "stage": "启动（载入 PyTorch 等）", "since": time.time(), "stages": {}, "device": ""}
 
     def note_stage(stage):
@@ -513,7 +585,10 @@ def run_worker(args: list[str], on_event, on_log=None, script: Path | None = Non
             perf["stages"][perf["stage"]] = round(perf["stages"].get(perf["stage"], 0) + now - perf["since"], 2)
         perf["stage"], perf["since"] = name, now
     assert process.stdout
-    for line in process.stdout:
+    while True:
+        line = process.stdout.readline()
+        if not line:              # 进程结束（或被取消时杀掉）
+            break
         line = line.strip()
         if not line:
             continue
@@ -523,22 +598,32 @@ def run_worker(args: list[str], on_event, on_log=None, script: Path | None = Non
             except ValueError:
                 event = None
             if event:
-                if event.get("type") == "progress":
+                kind = event.get("type")
+                if kind == "job_end":             # 常驻进程：这个任务结束了
+                    code = int(event.get("code", 1))
+                    break
+                if kind == "job_start":
+                    note_stage("开始")
+                    continue
+                if kind == "progress":
                     note_stage(event.get("stage", ""))
-                elif event.get("type") == "device":
+                elif kind == "device":
                     perf["device"] = event.get("name", "")
-                if event.get("type") == "download":
+                if kind == "download":
                     TRANSFER.update(event.get("name", "") or "模型", event.get("done", 0), event.get("total", 0))
-                if event.get("type") == "done":
+                if kind == "done":
                     done = event
-                elif event.get("type") == "error":
+                elif kind == "error":
                     error = event
                 on_event(event)
                 continue
         tail = (tail + [line])[-20:]
         if on_log:
             on_log(line)
-    code = process.wait()
+    if code is None:
+        code = process.wait()
+        if persistent:
+            _stop_server()
     _RUNNING["process"] = None
     note_stage("结束")
     _write_perf(script, args, perf, ok=bool(done) and code == 0)

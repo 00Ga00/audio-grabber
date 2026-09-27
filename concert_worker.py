@@ -535,7 +535,7 @@ def process(inp: str, out: str, models_dir: str, steps: list[str], analysis_path
     emit("done", output=out)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--download", action="store_true")
     parser.add_argument("--download-steps", help="只下载这些步骤的模型（逗号分隔）")
@@ -548,7 +548,7 @@ def main() -> int:
     parser.add_argument("--low-vram", action="store_true", help="显存小：一次只放一个模型")
     parser.add_argument("--overlap", type=int, default=None, help="分离模型的重叠次数（默认用模型自己的设置）")
     parser.add_argument("--no-fast", action="store_true", help="不用半精度（结果和旧版逐位一致，速度慢一些）")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
@@ -573,5 +573,63 @@ def main() -> int:
         return 1
 
 
+def serve(idle_seconds: float = 600) -> int:
+    """常驻模式：从标准输入逐行读任务 {"script": "concert_worker"|"transcribe_worker", "args": [...]}，
+    做完一个输出 job_end 再等下一个。PyTorch 只载入一次；闲置太久或主程序退出（输入关闭）就结束。"""
+    import gc
+    import threading
+    import time
+
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdin.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    last = {"t": time.time(), "busy": False}
+
+    def watchdog():
+        while True:
+            time.sleep(15)
+            if not last["busy"] and time.time() - last["t"] > idle_seconds:
+                os._exit(0)
+
+    threading.Thread(target=watchdog, daemon=True).start()
+    try:                      # 趁空闲先把重的库载入好
+        import torch  # noqa: F401
+        from audio_separator.separator import Separator  # noqa: F401
+    except Exception:
+        pass
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        last["busy"] = True
+        emit("job_start")
+        try:
+            job = json.loads(line)
+            if job.get("script") == "transcribe_worker":
+                import transcribe_worker
+                code = transcribe_worker.main(job.get("args", []))
+            else:
+                code = main(job.get("args", []))
+        except SystemExit as exit_:          # argparse 参数错误
+            code = int(exit_.code or 1)
+        except Exception as error:
+            emit("error", message=str(error), detail=traceback.format_exc())
+            code = 1
+        try:
+            gc.collect()
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()     # 模型用完就把显存还回去
+        except Exception:
+            pass
+        emit("job_end", code=code)
+        last["t"], last["busy"] = time.time(), False
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--serve":
+        sys.exit(serve(float(sys.argv[2]) if len(sys.argv) > 2 else 600))
     sys.exit(main())

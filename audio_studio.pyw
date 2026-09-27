@@ -650,6 +650,7 @@ def main() -> None:
 
     def load_concert_file(chosen):
         c_input.set(chosen)
+        concert.warm_up()   # 趁用户调设置时在后台载入 AI（省掉开始处理时约 30 秒的等待）
         c_line.update(data=None, duration=0.0)
         ffmpeg = core.find_ffmpeg()
 
@@ -1407,6 +1408,7 @@ def main() -> None:
     s_card.columnconfigure(1, weight=1)
     s_card.rowconfigure(8, weight=1)
     s_input = tk.StringVar()
+    s_input.trace_add("write", lambda *_: concert.warm_up() if os.path.isfile(s_input.get().strip()) else None)
     s_output_dir = tk.StringVar(value=saved["outdir"])
     s_clean = tk.BooleanVar(value=True)
     s_fine = tk.BooleanVar(value=False)
