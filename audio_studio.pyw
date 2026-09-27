@@ -1876,6 +1876,10 @@ def main() -> None:
     g2_open_button = ttk.Button(g2_actions, text="打开文件夹", state="disabled",
                                 command=lambda: open_path((g2_state["result"] or {}).get("exported", [""])[0]))
     g2_open_button.grid(row=0, column=2, padx=(8, 0))
+    g2_live_button = ttk.Button(g2_actions, text="● 边放边录（电脑声音）")
+    g2_live_button.grid(row=0, column=3, padx=(8, 0))
+    g2_live = {"on": False, "chord": "N", "history": [], "capo": 0, "seconds": 0.0, "wav": None, "stop": None, "folder": None}
+    g2_recorder = RecordingController(lambda event: events.put(("guitar_rec", event)))
     g2_progress = ttk.Progressbar(g2_card, maximum=100)
     g2_progress.grid(row=7, column=0, columnspan=3, sticky="ew")
 
@@ -1952,6 +1956,23 @@ def main() -> None:
         w, h = max(c.winfo_width(), 300), max(c.winfo_height(), 100)
         result = g2_state["result"]
         info = (result or {}).get("chords")
+        if g2_live["on"]:
+            mm, ss = divmod(int(g2_live["seconds"]), 60)
+            c.create_text(10, 10, anchor="w", text=f"● 正在边放边录 · 已录 {mm}:{ss:02d} · 停止后自动完整扒谱（和弦 + Solo 六线谱）",
+                          font=("Microsoft YaHei UI", 9, "bold"), fill="#d9480f")
+            name = g2_live["chord"]
+            c.create_text(20, 70, anchor="w", text=name if name != "N" else "–", font=("Microsoft YaHei UI", 30, "bold"), fill="#1f2a3d")
+            if name != "N":
+                draw_chord_diagram(c, 150, 30, name, chords.shape(name)[0], 1.0, active=True)
+            history = [n for n in g2_live["history"] if n != "N"][-14:]
+            x = 260
+            c.create_text(x, 34, anchor="w", text="刚才的和弦：", font=("Microsoft YaHei UI", 8), fill="#8a94a6")
+            c.create_text(x, 60, anchor="w", text="  ".join(history) or "（还没有）", font=("Microsoft YaHei UI", 12, "bold"),
+                          fill="#5b6678", width=w - x - 10)
+            if g2_live["capo"] and g2_live["seconds"] > 20:
+                c.create_text(x, h - 18, anchor="w", text=f"目前看来：夹变调夹第 {g2_live['capo']} 品会更好按（停止后按完整结果给出）",
+                              font=("Microsoft YaHei UI", 8), fill="#8a94a6")
+            return
         if not info:
             c.create_text(w / 2, h / 2, text="和弦会显示在这里：按法图、变调夹建议，播放时当前和弦会变成橙色",
                           fill="#8a94a6", font=("Microsoft YaHei UI", 9), width=w - 40, justify="center")
@@ -2012,7 +2033,7 @@ def main() -> None:
         for s_ in range(6):
             c.create_line(left, sy(s_), right, sy(s_), fill="#6b5b4b", width=1 + (5 - s_) * 0.35)
             c.create_text(12, sy(s_), text=str(6 - s_) + "弦" if s_ in (0, 5) else str(6 - s_), font=("Microsoft YaHei UI", 7), fill="#8a7a66")
-        if not result:
+        if not result and not g2_live["on"]:
             c.create_text(w / 2, (top + bottom) / 2, text="指板：播放时显示现在要按的位置（橙色），下一个音是空心圈；没有 Solo 时显示当前和弦的按法",
                           fill="#8a7a66", font=("Microsoft YaHei UI", 9), width=w - 60)
             return
@@ -2025,6 +2046,16 @@ def main() -> None:
                 c.create_text(x, y, text=str(fret), font=("Microsoft YaHei UI", 8, "bold"), fill="#ffffff" if fill != "" else outline)
 
         chord_text = ""
+        if g2_live["on"]:
+            name = g2_live["chord"]
+            if name != "N":
+                for s_, f in enumerate(chords.shape(name)[0]):
+                    if f > 0:
+                        dot(s_, f, "#d9480f", "#d9480f")
+                    elif f == 0:
+                        dot(s_, 0, "", "#d9480f", label=False)
+            g2_time.configure(text=f"实时和弦：{name if name != 'N' else '–'}")
+            return
         if notes:
             now = [n for n in notes if n["start"] <= t < max(n["end"], n["start"] + 0.12)]
             later = [n for n in notes if n["start"] > t]
@@ -2107,6 +2138,58 @@ def main() -> None:
         g2_start_button.configure(state="disabled" if busy else "normal")
         g2_cancel_button.configure(state="normal" if busy else "disabled")
 
+    def start_live():
+        """边放边录：录电脑正在放的声音，同时实时显示和弦；停止后自动用完整流程扒整段。"""
+        if g2_live["on"]:
+            g2_live_button.configure(state="disabled", text="正在停止……")
+            g2_recorder.stop()
+            if g2_live["stop"]:
+                Path(g2_live["stop"]).touch()
+            return
+        if state.get("guitar_busy") or state.get("recording"):
+            messagebox.showinfo(APP_TITLE, "现在有别的任务在进行（扒谱或录音），请等它结束。")
+            return
+        if not concert.ai_available():
+            messagebox.showinfo(APP_TITLE, "需要先在“设置”里安装演唱会降噪组件。")
+            return
+        if not helper_available():
+            try:
+                install_helper(lambda t: events.put(("guitar_log", t)))
+            except Exception as error:
+                messagebox.showerror(APP_TITLE, str(error))
+                return
+        output_dir = g2_output_dir.get().strip() or str(Path.home() / "Music")
+        os.makedirs(output_dir, exist_ok=True)
+        wav = os.path.join(output_dir, time.strftime("边放边录_%Y%m%d_%H%M%S.wav"))
+        folder = transcribe._session("live")
+        stop = str(folder / "stop")
+        try:
+            g2_recorder.start("system", None, wav, 0, 0, -45)
+        except Exception as error:
+            messagebox.showerror(APP_TITLE, str(error))
+            return
+        g2_player.close()
+        g2_state.update(result=None, playing=False, paused_at=0.0)
+        g2_live.update(on=True, chord="N", history=[], capo=0, seconds=0.0, wav=wav, stop=stop, folder=str(folder))
+        g2_live_button.configure(text="■ 停止并扒谱")
+        g2_start_button.configure(state="disabled")
+        g2_status.set("正在录电脑的声音：现在去播放音乐吧。会录下电脑里所有的声音，其他提示音也会被录进去")
+        draw_g2_chords()
+        draw_g2_board()
+
+        def live_worker():
+            try:
+                concert._RUNNING["cancelled"] = False
+                concert.run_worker(["--live", wav, "--stop-file", stop, "--out", str(folder), "--models", str(concert.MODELS_DIR)],
+                                   lambda e: events.put(("guitar_live", e)) if e.get("type") == "live_chord" else None,
+                                   script=guitar.WORKER)
+            except Exception as error:
+                events.put(("guitar_log", "实时和弦出错：" + str(error).splitlines()[0][:100]))
+
+        threading.Thread(target=live_worker, daemon=True).start()
+
+    g2_live_button.configure(command=start_live)
+
     def start_guitar():
         if state.get("guitar_busy"):
             return
@@ -2167,6 +2250,36 @@ def main() -> None:
     g2_start_button.configure(command=start_guitar)
 
     def handle_guitar_event(kind, value):
+        if kind == "guitar_live":
+            if g2_live["on"]:
+                if value.get("name") != g2_live["chord"]:
+                    g2_live["history"].append(value.get("name"))
+                g2_live.update(chord=value.get("name", "N"), capo=value.get("capo", 0), seconds=value.get("seconds", 0.0))
+                draw_g2_chords()
+                draw_g2_board()
+            return
+        if kind == "guitar_rec":
+            event_type = value.get("type")
+            if event_type == "level":
+                g2_live["seconds"] = float(value.get("seconds", g2_live["seconds"]))
+            elif event_type == "error":
+                messagebox.showerror(APP_TITLE, value.get("message", "录音失败"))
+            elif event_type in ("stopped", "exit") and g2_live["on"]:
+                g2_live["on"] = False
+                if g2_live["stop"]:
+                    Path(g2_live["stop"]).touch()
+                g2_live_button.configure(state="normal", text="● 边放边录（电脑声音）")
+                g2_start_button.configure(state="normal")
+                wav = value.get("output") or g2_live["wav"]
+                if wav and os.path.isfile(wav) and os.path.getsize(wav) > 44 + 48000 * 4 * 3:
+                    g2_clip.set(False)
+                    g2_input.set(wav)
+                    g2_status.set("录好了（" + os.path.basename(wav) + "），开始完整扒谱……")
+                    root.after(300, start_guitar)
+                else:
+                    g2_status.set("录音太短（不到 3 秒），没有扒谱")
+                draw_g2_chords()
+            return
         if kind == "guitar_progress":
             frac, stage = value
             g2_progress.configure(value=frac * 100)

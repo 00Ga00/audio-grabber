@@ -298,6 +298,13 @@ AI 组件|AI components|KI-Komponenten
 第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
 录音组件|Recorder|Rekorder
 ● 有新版本|● Update available|● Update verfügbar
+● 边放边录（电脑声音）|● Record while playing (PC audio)|● Beim Abspielen aufnehmen (PC-Ton)
+■ 停止并扒谱|■ Stop & transcribe|■ Stopp & transkribieren
+正在停止……|Stopping…|Wird gestoppt…
+现在有别的任务在进行（扒谱或录音），请等它结束。|Another task (transcription or recording) is running – please wait for it to finish.|Eine andere Aufgabe (Transkription oder Aufnahme) läuft – bitte warten.
+需要先在“设置”里安装演唱会降噪组件。|Please install “Concert cleanup” in Settings first.|Bitte zuerst in den Einstellungen „Konzert-Bereinigung“ installieren.
+正在录电脑的声音：现在去播放音乐吧。会录下电脑里所有的声音，其他提示音也会被录进去|Recording your PC audio: start the music now. Everything the PC plays is recorded, including notification sounds|PC-Ton wird aufgenommen: jetzt die Musik starten. Alles, was der PC abspielt, wird aufgenommen, auch Hinweistöne
+录音太短（不到 3 秒），没有扒谱|Recording too short (under 3 s) – nothing transcribed|Aufnahme zu kurz (unter 3 s) – nichts transkribiert
 吉他扒谱|Guitar|Gitarre
 吉他扒谱：和弦与 Solo|Guitar: chords & solos|Gitarre: Akkorde & Soli
 分离出吉他 → 认和弦（弹唱）→ Solo 扒成六线谱（第几弦第几品）→ 指板上跟着练，可放慢、可只听伴奏|Isolate the guitar → detect chords → transcribe solos as tab (string & fret) → practise on the fretboard, slowed down or with the backing track only|Gitarre isolieren → Akkorde erkennen → Soli als Tabulatur (Saite & Bund) → auf dem Griffbrett üben, verlangsamt oder nur mit Begleitung
@@ -409,6 +416,16 @@ AI 处理完成|AI finished|KI fertig
 识别到调性：|Key detected: |Erkannte Tonart: 
 （活动）| (activity)| (Aktivität)
 版本 |Version |Version
+● 正在边放边录 · 已录 |● Recording while playing · |● Aufnahme läuft · 
+ · 停止后自动完整扒谱（和弦 + Solo 六线谱）| recorded · full transcription (chords + solo tab) after you stop| aufgenommen · vollständige Transkription (Akkorde + Solo-Tab) nach dem Stoppen
+刚才的和弦：|Recent chords:|Letzte Akkorde:
+（还没有）|(none yet)|(noch keine)
+目前看来：夹变调夹第 |So far: a capo on fret |Bisher: Kapo im Bund 
+ 品会更好按（停止后按完整结果给出）| would be easier (final advice after you stop)| wäre leichter (endgültig nach dem Stoppen)
+实时和弦：|Live chord: |Live-Akkord: 
+录好了（|Recorded (|Aufgenommen (
+），开始完整扒谱……|), starting the full transcription…|), vollständige Transkription startet…
+实时和弦出错：|Live chords failed: |Live-Akkorde fehlgeschlagen: 
 变调夹第 |Capo on fret |Kapo im Bund 
  品（按下面的指法弹）| (play the shapes below)| (Griffe unten spielen)
 不用变调夹|no capo|kein Kapo

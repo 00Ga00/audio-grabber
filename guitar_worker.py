@@ -112,6 +112,23 @@ def beat_frame(beats, downbeats, duration: float):
 
 # ------------------------------------------------------------------ 和弦
 
+def chord_templates():
+    """和弦模板：N（没有和弦）+ 12 个根音 × 8 种和弦；少见的种类略减分，避免乱认。"""
+    import numpy as np
+    labels = ["N"] + [ch.make_name(r, q) for q in ch.QUALITIES for r in range(12)]
+    templates, prior = [np.zeros(12)], [0.0]
+    penalty = {"": 0.0, "m": 0.0, "7": 0.04, "maj7": 0.05, "m7": 0.04, "sus4": 0.07, "sus2": 0.08, "dim": 0.08}
+    for q, intervals in ch.QUALITIES.items():
+        for r in range(12):
+            t = np.zeros(12)
+            for i in intervals:
+                t[(r + i) % 12] = 1.0
+            t[r] = 1.3                                  # 根音稍微加重
+            templates.append(t / np.linalg.norm(t))
+            prior.append(-penalty[q])
+    return labels, np.array(templates), np.array(prior)
+
+
 def recognize_chords(tracks: dict, beats_full, bar_start: int, per_bar: int, duration: float) -> dict:
     import librosa
     import numpy as np
@@ -137,18 +154,7 @@ def recognize_chords(tracks: dict, beats_full, bar_start: int, per_bar: int, dur
     edges = list(zip(beat_frames[:-1], beat_frames[1:]))
     times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=hop)
 
-    labels = ["N"] + [ch.make_name(r, q) for q in ch.QUALITIES for r in range(12)]
-    templates, prior = [np.zeros(12)], [0.0]
-    penalty = {"": 0.0, "m": 0.0, "7": 0.04, "maj7": 0.05, "m7": 0.04, "sus4": 0.07, "sus2": 0.08, "dim": 0.08}
-    for q, intervals in ch.QUALITIES.items():
-        for r in range(12):
-            t = np.zeros(12)
-            for i in intervals:
-                t[(r + i) % 12] = 1.0
-            t[r] = 1.3                                  # 根音稍微加重
-            templates.append(t / np.linalg.norm(t))
-            prior.append(-penalty[q])
-    templates = np.array(templates)
+    labels, templates, prior = chord_templates()
     loud = np.percentile(rms, 90) + 1e-9
     scores, bass_pcs = [], []
     for a, b in edges:
@@ -771,12 +777,108 @@ def run(path: str, out: str, models_dir: str, do_chords: bool, do_solo: bool, mo
     emit("done", output=os.path.join(out, "result.json"))
 
 
+def _wav_format(path: str):
+    """读 WAV 头：(采样率, 声道数, 位深, 是否浮点, 数据开始的位置)。"""
+    import struct
+    with open(path, "rb") as handle:
+        head = handle.read(4096)
+    if head[:4] != b"RIFF":
+        return None
+    pos, fmt = 12, None
+    while pos + 8 <= len(head):
+        chunk, size = head[pos:pos + 4], struct.unpack("<I", head[pos + 4:pos + 8])[0]
+        if chunk == b"fmt ":
+            tag, channels, rate = struct.unpack("<HHI", head[pos + 8:pos + 16])
+            bits = struct.unpack("<H", head[pos + 22:pos + 24])[0]
+            fmt = (rate, channels, bits, tag == 3 or (tag == 0xFFFE and bits == 32))
+        elif chunk == b"data":
+            return fmt + (pos + 8,) if fmt else None
+        pos += 8 + size + (size & 1)
+    return None
+
+
+def live_chords(wav: str, stop_file: str) -> None:
+    """边录边认和弦：每 0.5 秒看一眼录音文件新写进来的声音，用最近 2 秒认当前和弦。
+    stop_file 出现（录音停止）就结束。"""
+    import time
+    import librosa
+    import numpy as np
+
+    labels, templates, prior = chord_templates()
+    fmt, offset, buffer = None, 0, np.zeros(0, dtype=np.float32)
+    current, candidate, streak, counts, started = "N", None, 0, {}, time.time()
+    last_emit = 0.0
+    while True:
+        if os.path.exists(stop_file):
+            break
+        if fmt is None and os.path.exists(wav):
+            fmt = _wav_format(wav)
+            if fmt:
+                offset = fmt[4]
+        if fmt is None:
+            if time.time() - started > 30:
+                raise RuntimeError("录音文件一直没有出现，请检查录音组件。")
+            time.sleep(0.3)
+            continue
+        rate, channels, bits, is_float, _ = fmt
+        frame = channels * bits // 8
+        with open(wav, "rb") as handle:
+            handle.seek(offset)
+            raw = handle.read()
+        raw = raw[:len(raw) // frame * frame]
+        offset += len(raw)
+        if raw:
+            if is_float:
+                data = np.frombuffer(raw, dtype="<f4")
+            elif bits == 16:
+                data = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768
+            else:   # 24 位
+                b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3)
+                data = ((b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8) | (b[:, 2].astype(np.int32) << 16)) << 8 >> 8
+                        ).astype(np.float32) / 8388608
+            mono = data.reshape(-1, channels).mean(axis=1)
+            buffer = np.concatenate([buffer, mono])[-int(rate * 2.0):]
+        if len(buffer) >= rate * 1.0 and time.time() - last_emit >= 0.45:
+            last_emit = time.time()
+            y = librosa.resample(buffer, orig_sr=rate, target_sr=22050)
+            rms = float(np.sqrt(np.mean(y ** 2)))
+            if rms < 0.004:
+                name = "N"
+            else:
+                c = librosa.feature.chroma_cqt(y=y, sr=22050, hop_length=1024, n_octaves=6, bins_per_octave=36).mean(axis=1)
+                bass = librosa.feature.chroma_cqt(y=y, sr=22050, hop_length=1024, fmin=librosa.note_to_hz("E1"), n_octaves=2,
+                                                  bins_per_octave=36).mean(axis=1)
+                v = c / (np.linalg.norm(c) + 1e-9)
+                score = templates @ v + prior
+                bn = bass / (bass.max() + 1e-9)
+                score[1:] += 0.15 * bn[(np.arange(1, len(labels)) - 1) % 12]
+                score[0] = -1
+                name = labels[int(np.argmax(score))]
+            # 连续两次都认成同一个新和弦才换（避免闪来闪去）
+            if name != current:
+                streak = streak + 1 if name == candidate else 1
+                candidate = name
+                if streak >= 2:
+                    current, streak = name, 0
+            else:
+                streak = 0
+            if current != "N":
+                counts[current] = counts.get(current, 0) + 1
+            capo = ch.suggest_capo(counts) if counts else {"capo": 0, "shapes": {}}
+            emit("live_chord", name=current, seconds=round(offset / max(rate * frame, 1), 1), level=round(rms, 4),
+                 capo=capo["capo"], shape=capo["shapes"].get(current, current))
+        time.sleep(0.15)
+    emit("done", output=wav)
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import traceback
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--guitar", required=True)
+    parser.add_argument("--guitar")
+    parser.add_argument("--live")
+    parser.add_argument("--stop-file")
     parser.add_argument("--out", required=True)
     parser.add_argument("--models", required=True)
     parser.add_argument("--title", default="吉他")
@@ -791,6 +893,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         import concert_worker as cw
         cw.FAST["overlap"] = args.overlap
+        if args.live:
+            live_chords(args.live, args.stop_file)
+            return 0
         run(args.guitar, args.out, args.models, args.chords, args.solo, args.mono, args.size, args.beam, args.parallel,
             args.title)
         return 0
