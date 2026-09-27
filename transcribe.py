@@ -72,7 +72,7 @@ def install(log=lambda _m: None) -> None:
     concert._stop_server()   # 常驻 AI 进程占着文件时 Windows 上装不上
     py = [str(concert.ai_python())]
     log("正在安装扒谱组件（MuScriptor、Beat This!、music21）……")
-    if concert._run_stream(py + ["-m", "pip", "install", "--disable-pip-version-check", "muscriptor", "music21", "mido"], log) != 0:
+    if concert._run_stream(py + ["-m", "pip", "install", "--disable-pip-version-check", "muscriptor", "music21", "mido", "pyguitarpro"], log) != 0:
         raise RuntimeError("扒谱组件安装失败，请检查网络后重试。")
     concert._ensure_cuda_torch(py, log)   # 新依赖有时会把显卡版 PyTorch 换掉，这里确认一遍
     READY_FLAG.write_text("ok", encoding="utf-8")
@@ -142,6 +142,18 @@ def model_cached(size: str) -> bool:
     return any(os.path.isfile(path) and os.path.getsize(path) > 1_000_000 for path in glob.glob(pattern))
 
 
+def ensure_model(size: str) -> None:
+    """耗时的清理之前先确认扒谱模型能用：已下载过就直接通过（不联网、不启动进程），否则检查下载权限。"""
+    if model_cached(size):
+        return
+    access = {}
+    concert.run_worker(["--check-model", size, "--out", str(HERE)],
+                       lambda event: access.update(event) if event.get("type") == "model_access" else None,
+                       script=WORKER)
+    if not access.get("ok"):
+        raise RuntimeError(access.get("message") or "无法确认扒谱模型是否可用。")
+
+
 def run_transcription(source: str, ffmpeg: str, size_label: str, instruments: list[str], clean: bool,
                       log=lambda _m: None, progress=lambda _f, _s="": None,
                       start: float | None = None, length: float | None = None) -> dict:
@@ -151,13 +163,7 @@ def run_transcription(source: str, ffmpeg: str, size_label: str, instruments: li
         raise RuntimeError("还没有设置 Hugging Face 授权（扒谱模型需要）。请先点“Hugging Face 授权…”。")
     concert._RUNNING["cancelled"] = False
     size, beam, parallel = SIZES.get(size_label, ("large", 1, 1))
-    if not model_cached(size):   # 已经下载过就不用联网检查，也不用多启动一次进程
-        access = {}
-        concert.run_worker(["--check-model", size, "--out", str(HERE)],
-                           lambda event: access.update(event) if event.get("type") == "model_access" else None,
-                           script=WORKER)
-        if not access.get("ok"):
-            raise RuntimeError(access.get("message") or "无法确认扒谱模型是否可用。")
+    ensure_model(size)
     folder = _session("score")
     audio = prepare_audio(source, ffmpeg, clean, folder, log, progress, start, length)
     base = 0.35 if clean else 0.02

@@ -298,6 +298,28 @@ AI 组件|AI components|KI-Komponenten
 第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
 录音组件|Recorder|Rekorder
 ● 有新版本|● Update available|● Update verfügbar
+吉他扒谱|Guitar|Gitarre
+吉他扒谱：和弦与 Solo|Guitar: chords & solos|Gitarre: Akkorde & Soli
+分离出吉他 → 认和弦（弹唱）→ Solo 扒成六线谱（第几弦第几品）→ 指板上跟着练，可放慢、可只听伴奏|Isolate the guitar → detect chords → transcribe solos as tab (string & fret) → practise on the fretboard, slowed down or with the backing track only|Gitarre isolieren → Akkorde erkennen → Soli als Tabulatur (Saite & Bund) → auf dem Griffbrett üben, verlangsamt oder nur mit Begleitung
+选一首民谣 / 摇滚歌曲：认出和弦（带按法图和变调夹建议），把吉他 Solo 扒成六线谱，并在指板上显示按哪里|Pick a folk / rock song: chords with diagrams and a capo suggestion, the guitar solo as tab, and where to press on the fretboard|Wähle einen Folk-/Rock-Song: Akkorde mit Griffbildern und Kapo-Vorschlag, das Gitarrensolo als Tabulatur und wo man greift
+和弦（弹唱）|Chords (strumming)|Akkorde (Begleitung)
+Solo 六线谱|Solo tab|Solo-Tab
+只要旋律（Solo 推荐）|Melody only (best for solos)|Nur Melodie (für Soli)
+现场录音：先去观众声|Live recording: remove crowd first|Live-Aufnahme: erst Publikum entfernen
+例：2:15；扒 Solo 时只选 Solo 那一段，快很多|e.g. 2:15 – select just the solo, it is much faster|z. B. 2:15 – nur das Solo wählen geht viel schneller
+开始扒谱|Start|Start
+▶ 播放|▶ Play|▶ Abspielen
+⏸ 暂停|⏸ Pause|⏸ Pause
+⏮ 从头|⏮ Restart|⏮ Von vorn
+速度|Speed|Tempo
+听|Listen to|Hören
+原曲|Original|Original
+伴奏（去掉吉他）|Backing (no guitar)|Begleitung (ohne Gitarre)
+只有吉他|Guitar only|Nur Gitarre
+循环|Loop|Schleife
+请至少勾选“和弦”或“Solo 六线谱”中的一项。|Please select “Chords” or “Solo tab”.|Bitte „Akkorde“ oder „Solo-Tab“ wählen.
+和弦会显示在这里：按法图、变调夹建议，播放时当前和弦会变成橙色|Chords appear here with diagrams and a capo suggestion; the current chord turns orange while playing|Hier erscheinen Akkorde mit Griffbildern und Kapo-Vorschlag; der aktuelle Akkord wird beim Abspielen orange
+指板：播放时显示现在要按的位置（橙色），下一个音是空心圈；没有 Solo 时显示当前和弦的按法|Fretboard: while playing, orange = press now, hollow = next note; without a solo it shows the current chord shape|Griffbrett: orange = jetzt greifen, hohl = nächster Ton; ohne Solo wird der aktuelle Akkordgriff gezeigt
 显卡半精度（快 1.5–2 倍）|GPU half precision (1.5–2× faster)|GPU-Halbpräzision (1,5–2× schneller)
 快速分离（快约 1.9 倍，差别约 −38 dB）|Fast separation (≈1.9× faster, difference ≈ −38 dB)|Schnelle Trennung (≈1,9× schneller, Unterschied ≈ −38 dB)
 选择安装版本|Choose an edition|Version wählen
@@ -387,6 +409,29 @@ AI 处理完成|AI finished|KI fertig
 识别到调性：|Key detected: |Erkannte Tonart: 
 （活动）| (activity)| (Aktivität)
 版本 |Version |Version
+变调夹第 |Capo on fret |Kapo im Bund 
+ 品（按下面的指法弹）| (play the shapes below)| (Griffe unten spielen)
+不用变调夹|no capo|kein Kapo
+当前和弦：|Current chord: |Aktueller Akkord: 
+（变调夹 | (capo | (Kapo 
+ 品）| )| )
+整首偏|whole song is |ganzes Lied 
+ 音分| cents| Cent
+ 个和弦| chords| Akkorde
+，建议变调夹第 |, suggested capo: fret |, Kapo-Vorschlag: Bund 
+Solo |Solo |Solo 
+ 个音| notes| Töne
+点“播放”在指板上跟着练；文件已存到输出文件夹|Press “Play” to practise on the fretboard; files saved to the output folder|„Abspielen“ drücken und auf dem Griffbrett üben; Dateien im Ausgabeordner
+分离吉他、贝斯和其他声部|Separating guitar, bass and other parts|Gitarre, Bass und Rest trennen
+找拍子和小节线|Finding beats and bars|Takt und Schläge finden
+识别和弦|Detecting chords|Akkorde erkennen
+扒吉他音符|Transcribing guitar notes|Gitarrentöne transkribieren
+排六线谱把位|Choosing tab positions|Tab-Positionen wählen
+加载扒谱模型|Loading the transcription model|Transkriptionsmodell wird geladen
+正在补装 Guitar Pro 文件组件（约 1 MB）……|Installing the Guitar Pro file component (about 1 MB)…|Guitar-Pro-Komponente wird installiert (ca. 1 MB)…
+已保存到：|Saved to: |Gespeichert in: 
+大调| major| Dur
+小调| minor| Moll
  · 还要约 | · about | · noch ca. 
 去观众声 + 去底噪；适合没有 NVIDIA 显卡的电脑|crowd + noise removal; for PCs without an NVIDIA GPU|Publikum + Rauschen entfernen; für PCs ohne NVIDIA-GPU
 再加人声/伴奏分离、音质修复；适合 4–8 GB 显存|adds vocal/backing split and restoration; for 4–8 GB VRAM|plus Gesang/Begleitung-Trennung und Restaurierung; für 4–8 GB VRAM

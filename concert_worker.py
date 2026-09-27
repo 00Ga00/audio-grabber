@@ -610,6 +610,9 @@ def serve(idle_seconds: float = 600) -> int:
             if job.get("script") == "transcribe_worker":
                 import transcribe_worker
                 code = transcribe_worker.main(job.get("args", []))
+            elif job.get("script") == "guitar_worker":
+                import guitar_worker
+                code = guitar_worker.main(job.get("args", []))
             else:
                 code = main(job.get("args", []))
         except SystemExit as exit_:          # argparse 参数错误
