@@ -1306,7 +1306,7 @@ def build_part(notes: list[dict], beats_full, bar_start: int, tuning: list[int],
 
 def run(path: str, out: str, models_dir: str, do_chords: bool, do_solo: bool, mono: bool,
         size: str, beam: int, parallel: int, title: str, post_rock: bool = False, tuning_name: str = "自动",
-        one_string: bool = False) -> None:
+        one_string: bool = False, direct: bool = False) -> None:
     import numpy as np
     import soundfile as sf
     import torch
@@ -1325,12 +1325,25 @@ def run(path: str, out: str, models_dir: str, do_chords: bool, do_solo: bool, mo
     normalized = os.path.join(out, "input_normalized.wav")
     sf.write(normalized, data * (0.89 / peak), rate, subtype="FLOAT")
     del data
-    tracks = separate(normalized, models_dir, out)
+    if direct:
+        # 灵感本：自己对着麦克风弹的，本来就只有吉他，不用分离
+        rate_ = rate
+        solo, _ = sf.read(normalized, dtype="float32", always_2d=True)
+        if solo.shape[1] == 1:
+            solo = np.repeat(solo, 2, axis=1)
+        tracks = {"guitar": solo, "_rate": rate_}
+        for name in ("guitar", "mix", "backing"):
+            sf.write(os.path.join(out, f"{name}.wav"), solo if name != "backing" else solo * 0, rate_, subtype="PCM_16")
+    else:
+        tracks = separate(normalized, models_dir, out)
     mix = sum(v for k, v in tracks.items() if not k.startswith("_"))
     emit("progress", stage="找拍子和小节线", fraction=0.36)
     beats, downbeats = detect_beats(mix, tracks["_rate"], gpu)
     beats_full, bar_start, per_bar, tempo = beat_frame(beats, downbeats, duration)
+    bar_times = [round(float(beats_full[i]), 3) for i in range(bar_start, len(beats_full), per_bar)
+                 if beats_full[i] < duration]
     result = {"title": title, "duration": duration, "tempo": round(tempo, 1), "beats_per_bar": per_bar,
+              "bar_times": bar_times,
               "beats": [round(float(b), 3) for b in beats_full if -1 <= b <= duration + 1], "post_rock": post_rock,
               "files": {"guitar": os.path.join(out, "guitar.wav"), "backing": os.path.join(out, "backing.wav"),
                         "mix": os.path.join(out, "mix.wav")}}
@@ -1542,12 +1555,74 @@ def live_chords(wav: str, stop_file: str) -> None:
     emit("done", output=wav)
 
 
+# ------------------------------------------------------------------ 麦克风：录音、调音器、跟弹检测
+
+def _mic_stream(on_block, stop_file: str, rate: int = 44100, block: int = 2048):
+    """打开默认麦克风，把每一小块声音交给 on_block，直到 stop_file 出现。"""
+    import time
+    try:
+        import sounddevice as sd
+    except ImportError:
+        raise RuntimeError("还没有麦克风组件（sounddevice）。")
+    with sd.InputStream(samplerate=rate, channels=1, blocksize=block, dtype="float32") as stream:
+        while not os.path.exists(stop_file):
+            data, _overflow = stream.read(block)
+            on_block(data[:, 0], time.time())
+
+
+def record_mic(out_wav: str, stop_file: str) -> None:
+    import numpy as np
+    import soundfile as sf
+    rate = 44100
+    with sf.SoundFile(out_wav, "w", samplerate=rate, channels=1, subtype="PCM_16") as dst:
+        state = {"n": 0, "last": 0.0}
+
+        def on_block(x, now):
+            dst.write(x)
+            state["n"] += len(x)
+            if now - state["last"] > 0.1:
+                state["last"] = now
+                level = 20 * math.log10(float(np.sqrt(np.mean(x ** 2))) + 1e-9)
+                emit("mic_level", db=round(level, 1), seconds=round(state["n"] / rate, 1))
+        _mic_stream(on_block, stop_file, rate)
+    emit("done", output=out_wav)
+
+
+def mic_pitch(stop_file: str) -> None:
+    """调音器 / 跟弹检测：每约 50 毫秒报告一次现在听到的音高（单音）。"""
+    import numpy as np
+    import librosa
+    rate, window = 44100, 4096
+    buffer = np.zeros(0, dtype=np.float32)
+    librosa.yin(np.random.randn(window).astype(np.float32) * 0.1, fmin=70, fmax=1400, sr=rate,
+                frame_length=window, hop_length=window, center=False)          # 先编译一次，免得开头卡一下
+
+    def on_block(x, now):
+        nonlocal buffer
+        buffer = np.concatenate([buffer, x])[-window:]
+        if len(buffer) < window:
+            return
+        rms = float(np.sqrt(np.mean(buffer ** 2)))
+        if rms < 0.004:
+            emit("pitch", t=now, hz=0, level=round(20 * math.log10(rms + 1e-9), 1))
+            return
+        f0 = librosa.yin(buffer, fmin=70, fmax=1400, sr=rate, frame_length=window, hop_length=window, center=False)
+        hz = float(np.median(f0))
+        midi = 69 + 12 * math.log2(hz / 440.0) if hz > 0 else 0
+        emit("pitch", t=now, hz=round(hz, 2), midi=round(midi, 2), level=round(20 * math.log10(rms + 1e-9), 1))
+    _mic_stream(on_block, stop_file, rate, block=2048)
+    emit("done", output="")
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import traceback
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--guitar")
+    parser.add_argument("--direct", action="store_true", help="输入就是单独的吉他（灵感本），不分离")
+    parser.add_argument("--record-mic")
+    parser.add_argument("--mic-pitch", action="store_true")
     parser.add_argument("--live")
     parser.add_argument("--stop-file")
     parser.add_argument("--out", required=True)
@@ -1570,8 +1645,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.live:
             live_chords(args.live, args.stop_file)
             return 0
+        if args.record_mic:
+            record_mic(args.record_mic, args.stop_file)
+            return 0
+        if args.mic_pitch:
+            mic_pitch(args.stop_file)
+            return 0
         run(args.guitar, args.out, args.models, args.chords, args.solo, args.mono, args.size, args.beam, args.parallel,
-            args.title, args.post_rock, args.tuning, args.one_string)
+            args.title, args.post_rock, args.tuning, args.one_string, args.direct)
         return 0
     except Exception as error:
         emit("error", message=str(error), detail=traceback.format_exc())

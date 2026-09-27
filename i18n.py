@@ -298,6 +298,66 @@ AI 组件|AI components|KI-Komponenten
 第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
 录音组件|Recorder|Rekorder
 ● 有新版本|● Update available|● Update verfügbar
+扒谱与练琴|Transcribe & practise|Transkribieren & Üben
+创作|Create|Komponieren
+修音|Clean up|Bearbeiten
+获取声音|Get audio|Audio holen
+灵感本|Idea book|Ideenbuch
+和弦与音阶|Chords & scales|Akkorde & Skalen
+练第|Practise bars|Takte üben
+小节|bars|Takte
+渐进提速|Speed ramp|Tempo steigern
+节拍器|Metronome|Metronom
+预备拍|Count-in|Einzähler
+升降调|Transpose|Transponieren
+导出这段|Export section|Abschnitt exportieren
+调音器|Tuner|Stimmgerät
+跟弹检测|Play-along check|Mitspiel-Check
+■ 停止检测|■ Stop check|■ Check stoppen
+调音器：对着麦克风弹一根空弦|Tuner: play an open string into the microphone|Stimmgerät: eine leere Saite ins Mikrofon spielen
+和弦与音阶|Chords & scales|Akkorde & Skalen
+写歌用：选调和调式 → 点调内和弦搭进行（会推荐下一个和弦）→ 试听 → 指板上看音阶和和弦音，写旋律、Solo 时参考|For songwriting: pick key and mode → build a progression from the diatonic chords (with next-chord suggestions) → listen → see the scale and chord tones on the fretboard|Zum Songwriting: Tonart und Modus wählen → Folge aus leitereigenen Akkorden bauen (mit Vorschlägen) → anhören → Skala und Akkordtöne auf dem Griffbrett sehen
+调|Key|Tonart
+调式|Mode|Modus
+七和弦|Seventh chords|Septakkorde
+指板显示|Fretboard labels|Griffbrett-Beschriftung
+音名|Note names|Tonnamen
+级数（1 b3 5…）|Degrees (1 b3 5…)|Stufen (1 b3 5…)
+调内和弦：|Diatonic chords:|Leitereigene Akkorde:
+推荐下一个：|Next chord:|Nächster Akkord:
+常用进行：|Common progressions:|Gängige Folgen:
+选一个…|Choose…|Auswählen…
+▶ 试听|▶ Listen|▶ Anhören
+■ 停|■ Stop|■ Stopp
+撤销|Undo|Rückgängig
+清空|Clear|Leeren
+导出 MIDI|Export MIDI|MIDI exportieren
+存进灵感本|Save to idea book|Ins Ideenbuch
+点上面的和弦加进进行；点进行里的和弦在指板上看它的和弦音，右键删掉|Click a chord above to add it; click a chord in the progression to see its tones on the fretboard, right-click to remove|Oben einen Akkord anklicken, um ihn hinzuzufügen; in der Folge anklicken, um seine Töne zu sehen, Rechtsklick entfernt
+和弦进行会显示在这里（点上面的和弦添加）|Your progression appears here (click chords above)|Hier erscheint die Akkordfolge (oben Akkorde anklicken)
+对着麦克风弹一段 riff / 旋律，停下来就自动扒成六线谱和和弦，存进灵感本；以后可以试听、打开谱、拿去吉他页跟练|Play a riff or melody into the microphone; when you stop, it is transcribed to tab and chords and saved here – listen, open the sheet or practise it later|Spiele ein Riff oder eine Melodie ins Mikrofon; nach dem Stoppen wird es als Tab und Akkorde gespeichert – später anhören, Noten öffnen oder üben
+● 录一段（麦克风）|● Record (microphone)|● Aufnehmen (Mikrofon)
+■ 停止并扒谱|■ Stop & transcribe|■ Stopp & transkribieren
+导入音频…|Import audio…|Audio importieren…
+打开灵感本文件夹|Open idea folder|Ideenordner öffnen
+名称|Name|Name
+时间|Date|Datum
+速度|Tempo|Tempo
+和弦|Chords|Akkorde
+标签|Tags|Tags
+▶ 播放|▶ Play|▶ Abspielen
+打开谱|Open sheet|Noten öffnen
+去吉他页跟练|Practise on guitar page|Auf Gitarrenseite üben
+改名…|Rename…|Umbenennen…
+标签…|Tags…|Tags…
+删除|Delete|Löschen
+新名字：|New name:|Neuer Name:
+扒好了，已存进灵感本|Done – saved to the idea book|Fertig – im Ideenbuch gespeichert
+录音太短（不到 2 秒）|Recording too short (under 2 s)|Aufnahme zu kurz (unter 2 s)
+这个灵感还没有扒出来的谱（和弦进行可以在“和弦与音阶”页试听）。|This idea has no transcription yet (progressions can be played on the “Chords & scales” page).|Diese Idee hat noch keine Transkription (Akkordfolgen auf der Seite „Akkorde & Skalen“ anhören).
+这段音频里只有吉他吗？\n（是：直接扒，快；否：先把吉他从乐队里分离出来）|Is this audio guitar only?\n(Yes: transcribe directly, fast; No: separate the guitar from the band first)|Ist nur Gitarre zu hören?\n(Ja: direkt transkribieren, schnell; Nein: Gitarre zuerst von der Band trennen)
+跟弹检测：戴耳机放伴奏（免得麦克风听到原曲），跟着弹；弹对的音变绿，漏掉的变红|Play-along check: use headphones for the backing (so the mic doesn't hear it) and play along; correct notes turn green, missed ones red|Mitspiel-Check: Begleitung über Kopfhörer und mitspielen; richtige Töne werden grün, verpasste rot
+正在录音：弹吧！（离麦克风近一点；弹完点“停止并扒谱”）|Recording – play! (stay close to the mic; click “Stop & transcribe” when done)|Aufnahme läuft – spiel! (nah ans Mikrofon; danach „Stopp & transkribieren“)
 指法|Fingering|Fingersatz
 顺手（推荐）|Comfortable (recommended)|Bequem (empfohlen)
 一根弦优先|One string first|Eine Saite zuerst
@@ -426,6 +486,38 @@ AI 处理完成|AI finished|KI fertig
 识别到调性：|Key detected: |Erkannte Tonart: 
 （活动）| (activity)| (Aktivität)
 版本 |Version |Version
+渐进提速：这一遍 |Speed ramp: this pass |Tempo steigern: dieser Durchgang 
+伴奏升 |Backing up |Begleitung + 
+伴奏降 |Backing down |Begleitung − 
+ 个半音：夹变调夹第 | semitones: capo on fret | Halbtöne: Kapo im Bund 
+ 品，照谱上的指法弹| and play the shapes as written|, Griffe wie notiert spielen
+ 个半音：把吉他整体调低 | semitones: tune the whole guitar down | Halbtöne: Gitarre um 
+ 个半音，照谱上的指法弹| semitones and play as written| Halbtöne tiefer stimmen, wie notiert spielen
+已导出：|Exported: |Exportiert: 
+ · 跟弹 | · play-along | · Mitspielen 
+ · 跟弹检测中| · checking…| · Check läuft
+准了|in tune|gestimmt
+调高一点|tune up|höher stimmen
+调低一点|tune down|tiefer stimmen
+ 音分| cents| Cent
+最接近：|Closest: |Am nächsten: 
+ 弦（| string (| Saite (
+：黑 = 主音，白 = 音阶里的音|: black = root, white = scale notes|: schwarz = Grundton, weiß = Skalentöne
+，橙 = |, orange = |, orange = 
+ 的和弦音| chord tones| Akkordtöne
+已存进灵感本：|Saved to the idea book: |Im Ideenbuch gespeichert: 
+正在录音：|Recording: |Aufnahme: 
+扒谱失败：|Transcription failed: |Transkription fehlgeschlagen: 
+麦克风：|Microphone: |Mikrofon: 
+正在安装 |Installing |Installiere 
+（很小，一次就好）……| (small, once only)…| (klein, nur einmal)…
+大调（自然大调）|Major (Ionian)|Dur (ionisch)
+小调（自然小调）|Minor (Aeolian)|Moll (äolisch)
+大调五声|Major pentatonic|Dur-Pentatonik
+小调五声|Minor pentatonic|Moll-Pentatonik
+布鲁斯|Blues|Blues
+和声小调|Harmonic minor|Harmonisch Moll
+旋律小调|Melodic minor|Melodisch Moll
 录音音量很小（峰值 |Very quiet recording (peak |Sehr leise Aufnahme (Spitze 
  dB），已先放大到正常音量再识别。| dB) – boosted to a normal level before analysis.| dB) – vor der Analyse auf normalen Pegel angehoben.
 后摇模式：把安静段落的音量拉平|Post-rock: levelling quiet passages|Post-Rock: leise Passagen angleichen

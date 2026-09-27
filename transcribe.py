@@ -72,7 +72,7 @@ def install(log=lambda _m: None) -> None:
     concert._stop_server()   # 常驻 AI 进程占着文件时 Windows 上装不上
     py = [str(concert.ai_python())]
     log("正在安装扒谱组件（MuScriptor、Beat This!、music21）……")
-    if concert._run_stream(py + ["-m", "pip", "install", "--disable-pip-version-check", "muscriptor", "music21", "mido", "pyguitarpro"], log) != 0:
+    if concert._run_stream(py + ["-m", "pip", "install", "--disable-pip-version-check", "muscriptor", "music21", "mido", "pyguitarpro", "sounddevice"], log) != 0:
         raise RuntimeError("扒谱组件安装失败，请检查网络后重试。")
     concert._ensure_cuda_torch(py, log)   # 新依赖有时会把显卡版 PyTorch 换掉，这里确认一遍
     READY_FLAG.write_text("ok", encoding="utf-8")

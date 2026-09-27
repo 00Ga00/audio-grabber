@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -43,7 +44,7 @@ TUNING_CHOICES = ["自动", "标准 EADGBE", "降半音 Eb", "Drop D", "DADGAD",
 def run(source: str, ffmpeg: str, output_dir: str, do_chords: bool, do_solo: bool, mono: bool, size_label: str,
         clean: bool, log=lambda _m: None, progress=lambda _f, _s="": None,
         start: float | None = None, length: float | None = None, post_rock: bool = False, tuning: str = "自动",
-        one_string: bool = False) -> dict:
+        one_string: bool = False, direct: bool = False) -> dict:
     if not concert.ai_available():
         raise RuntimeError("需要先在“设置”里安装演唱会降噪组件（吉他分离要用）。")
     if do_solo:
@@ -79,6 +80,7 @@ def run(source: str, ffmpeg: str, output_dir: str, do_chords: bool, do_solo: boo
     args += ["--post-rock"] if post_rock else []
     args += ["--tuning", tuning]
     args += ["--one-string"] if one_string else []
+    args += ["--direct"] if direct else []
     args += concert._overlap_args()
     concert.run_worker(args, on_event, script=WORKER)
     result = json.loads((folder / "result.json").read_text(encoding="utf-8"))
@@ -162,3 +164,125 @@ def practice_audio(result: dict, track: str, speed: float, ffmpeg: str) -> str:
         subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", source, "-af", f"atempo={speed:.3f}",
                         "-c:a", "pcm_s16le", target], capture_output=True, creationflags=NO_WINDOW)
     return target if os.path.isfile(target) else source
+
+
+# ------------------------------------------------------------------ 练习：一段循环、变速、升降调、节拍器
+
+def _click_track(path: str, times: list[float], accents: set, length: float, rate: int = 44100) -> None:
+    """节拍器咔哒声（纯 Python 生成）：times 是每一拍在练习音频里的时间，强拍音高一点。"""
+    import array
+    import wave
+    total = int(length * rate) + 1
+    data = array.array("h", bytes(2 * total))
+    for k, t in enumerate(times):
+        start = int(t * rate)
+        freq, amp = (1760.0, 14000) if k in accents else (1175.0, 9000)
+        for i in range(int(0.03 * rate)):
+            if 0 <= start + i < total:
+                env = 1.0 - i / (0.03 * rate)
+                data[start + i] = int(amp * env * math.sin(2 * math.pi * freq * i / rate))
+    with wave.open(path, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(data.tobytes())
+
+
+def practice_segment(result: dict, track: str, speed: float, semitones: int, a: float | None, b: float | None,
+                     metronome: bool, count_in: bool, ffmpeg: str) -> tuple[str, float]:
+    """做一段练习音频：只取 A–B 这一段、放慢（音高不变）、升降调、叠节拍器、前面加 1 小节预备拍。
+    返回 (文件, 预备拍的秒数)。播放位置换算回原曲：原曲时间 = A + (播放秒数 − 预备拍) × 速度。"""
+    source = result["files"].get(track) or result["files"]["mix"]
+    duration = float(result.get("duration") or 0)
+    a = max(0.0, a or 0.0)
+    b = min(duration, b) if b else duration
+    beats = [t for t in result.get("beats", []) if a - 1e-3 <= t < b]
+    per_bar = int(result.get("beats_per_bar") or 4)
+    beat = 60.0 / float(result.get("tempo") or 100)
+    lead = per_bar * beat / speed if count_in else 0.0
+    ratio = 2 ** (semitones / 12)
+    key = f"{track}_{int(speed * 100)}_{semitones}_{int(a * 10)}_{int(b * 10)}_{int(metronome)}{int(count_in)}"
+    target = str(Path(result["folder"]) / f"practice_{key}.wav")
+    if os.path.isfile(target):
+        return target, lead
+    rate = 44100
+    chain = [f"atrim={a:.3f}:{b:.3f}", "asetpts=N/SR/TB", f"aresample={rate}"]
+    if semitones:
+        chain += [f"asetrate={rate * ratio:.1f}", f"aresample={rate}"]
+    tempo = speed / ratio
+    while tempo < 0.5:                       # atempo 一次最多减半
+        chain.append("atempo=0.5")
+        tempo /= 0.5
+    while tempo > 2.0:
+        chain.append("atempo=2.0")
+        tempo /= 2.0
+    chain.append(f"atempo={tempo:.4f}")
+    if lead:
+        chain.append(f"adelay={int(lead * 1000)}:all=1")
+    inputs = ["-i", source]
+    graph = "[0:a]" + ",".join(chain) + "[music]"
+    if metronome or count_in:
+        clicks = [(t - a) / speed + lead for t in beats] if metronome else []
+        first_beat = beats[0] if beats else a
+        downbeats = {k for k, t in enumerate(beats)
+                     if any(abs(t - bt) < 0.02 for bt in result.get("bar_times", []))} if metronome else set()
+        pre = [lead - (per_bar - k) * beat / speed for k in range(per_bar)] if count_in else []
+        offset = (first_beat - a) / speed if count_in else 0.0
+        pre = [p + offset for p in pre]
+        all_clicks = pre + clicks
+        accents = {0} if pre else set()
+        accents |= {len(pre) + k for k in downbeats}
+        click_path = str(Path(result["folder"]) / f"clicks_{key}.wav")
+        _click_track(click_path, all_clicks, accents, lead + (b - a) / speed + 1.0, rate)
+        inputs += ["-i", click_path]
+        graph += ";[1:a]aresample=44100[click];[music][click]amix=inputs=2:normalize=0:duration=longest[out]"
+    else:
+        graph += ";[music]anull[out]"
+    subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]",
+                    "-c:a", "pcm_s16le", target], capture_output=True, creationflags=NO_WINDOW)
+    return (target if os.path.isfile(target) else source), lead
+
+
+def export_practice(result: dict, path: str, ffmpeg: str) -> str | None:
+    target = str(Path(result.get("exported", [""])[0]).parent / Path(path).with_suffix(".flac").name.replace("practice_", "练习_"))
+    subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", path, "-c:a", "flac", target],
+                   capture_output=True, creationflags=NO_WINDOW)
+    return target if os.path.isfile(target) else None
+
+
+# ------------------------------------------------------------------ 麦克风（录灵感、调音器、跟弹检测）
+
+def ensure_package(package: str, module: str, log=lambda _m: None) -> None:
+    if any((p / module).exists() or any(p.glob(module + "*")) for p in _site_packages()):
+        return
+    log(f"正在安装 {package}（很小，一次就好）……")
+    if concert._run_stream([str(concert.ai_python()), "-m", "pip", "install", "--disable-pip-version-check", package], log) != 0:
+        raise RuntimeError(f"{package} 安装失败，请检查网络后重试。")
+
+
+class MicJob:
+    """在常驻 AI 进程里跑麦克风任务：kind = "record"（录音到文件）或 "pitch"（调音器 / 跟弹）。stop() 结束。"""
+
+    def __init__(self, kind: str, on_event, out_wav: str | None = None):
+        import tempfile
+        import threading
+        import uuid
+        self.stop_file = os.path.join(tempfile.gettempdir(), f"audio_studio_mic_{uuid.uuid4().hex[:8]}.stop")
+        self.error = None
+        args = ["--out", tempfile.gettempdir(), "--models", str(concert.MODELS_DIR), "--stop-file", self.stop_file]
+        args += ["--record-mic", out_wav] if kind == "record" else ["--mic-pitch"]
+
+        def worker():
+            try:
+                ensure_package("sounddevice", "sounddevice")
+                concert.run_worker(args, on_event, script=WORKER)
+            except Exception as error:
+                self.error = str(error)
+                on_event({"type": "mic_error", "message": str(error).splitlines()[0][:200]})
+            finally:
+                on_event({"type": "mic_stopped"})
+        self.thread = threading.Thread(target=worker, daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        Path(self.stop_file).touch()

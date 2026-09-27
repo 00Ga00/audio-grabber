@@ -18,7 +18,11 @@ import concert
 import hardware
 import transcribe
 import guitar
+import guitar_worker
 import chords
+import ideas
+import theory
+import shutil
 from audio_processing import ai_available, enhance_audio, install_ai, postprocess_recording
 from recording import GlobalHotkeys, RecordingController, helper_available, helper_path, install_helper, list_visible_processes
 
@@ -111,32 +115,76 @@ def main() -> None:
     content = ttk.Frame(shell, padding=(12, 10))
     content.pack(side="left", fill="both", expand=True)
 
+    # 导航分组：常用的放上面；组标题可以点一下折叠
+    NAV_GROUPS = [
+        ("扒谱与练琴", ["吉他扒谱", "扒谱"]),
+        ("创作", ["灵感本", "和弦与音阶"]),
+        ("修音", ["演唱会降噪", "音质增强"]),
+        ("获取声音", ["视频提取", "电脑录音"]),
+    ]
+
     class SideNav(ttk.Frame):
-        """左侧导航：接口和 ttk.Notebook 一样（add / insert / select），各页面代码不用改。"""
+        """左侧导航：按组显示（组标题可折叠）；接口和 ttk.Notebook 一样（add / insert / select），各页面代码不用改。"""
 
         def __init__(self, parent):
             super().__init__(parent)
             self.columnconfigure(0, weight=1)
             self.rowconfigure(0, weight=1)
             self.pages, self.current = [], None
+            self.collapsed, self.on_collapse = set(), None
+            self.headers = {}
+
+        def _order(self, text):
+            for gi, (_, names) in enumerate(NAV_GROUPS):
+                if text in names:
+                    return gi, names.index(text)
+            return len(NAV_GROUPS), 0
 
         def insert(self, index, frame, text="", bottom=False):
             item = tk.Label(nav_bottom if bottom else nav_top, text=text, anchor="w", background=SIDE_BG, foreground=SIDE_FG,
-                            font=("Microsoft YaHei UI", 11), padx=18, pady=int(9 * scale / 1.25), cursor="hand2")
+                            font=("Microsoft YaHei UI", 10), padx=26, pady=int(6 * scale / 1.25), cursor="hand2")
             item.bind("<Button-1>", lambda _e: self.select(frame))
             item.bind("<Enter>", lambda _e: item.configure(background=SIDE_HOVER) if self.current is not frame else None)
             item.bind("<Leave>", lambda _e: item.configure(background=SIDE_ACTIVE if self.current is frame else SIDE_BG))
-            position = index if isinstance(index, int) else len(self.pages)
-            self.pages.insert(position, (frame, item, bottom))
-            for _, other, is_bottom in self.pages:
-                other.pack_forget()
-            for _, other, is_bottom in self.pages:
-                other.pack(fill="x", side="top")
+            self.pages.append((frame, item, bottom, text))
+            self.pages.sort(key=lambda p: (p[2], self._order(p[3])))
+            self._layout()
             frame.grid(row=0, column=0, sticky="nsew")
             if self.current is None:
                 self.select(frame)
             else:
                 self.current.tkraise()
+
+        def _header(self, group):
+            if group not in self.headers:
+                label = tk.Label(nav_top, text="", anchor="w", background=SIDE_BG, foreground=SIDE_MUTED,
+                                 font=("Microsoft YaHei UI", 8, "bold"), padx=16, pady=int(3 * scale / 1.25), cursor="hand2")
+                label.bind("<Button-1>", lambda _e, g=group: self.toggle(g))
+                self.headers[group] = label
+            self.headers[group].configure(text=("▸ " if group in self.collapsed else "▾ ") + group)
+            return self.headers[group]
+
+        def _layout(self):
+            for widget in list(self.headers.values()) + [p[1] for p in self.pages]:
+                widget.pack_forget()
+            shown_group = None
+            for frame, item, bottom, text in self.pages:
+                if bottom:
+                    item.pack(fill="x", side="top")
+                    continue
+                gi, _ = self._order(text)
+                group = NAV_GROUPS[gi][0] if gi < len(NAV_GROUPS) else "其他"
+                if group != shown_group:
+                    self._header(group).pack(fill="x", side="top", pady=(6 if shown_group else 0, 0))
+                    shown_group = group
+                if group not in self.collapsed or frame is self.current:
+                    item.pack(fill="x", side="top")
+
+        def toggle(self, group):
+            self.collapsed ^= {group}
+            self._layout()
+            if self.on_collapse:
+                self.on_collapse(sorted(self.collapsed))
 
         def add(self, frame, text="", bottom=False):
             self.insert(len(self.pages), frame, text, bottom)
@@ -147,14 +195,15 @@ def main() -> None:
             if isinstance(frame, int):
                 frame = self.pages[frame][0]
             self.current = frame
-            for page, item, _ in self.pages:
+            for page, item, _, _ in self.pages:
                 active = page is frame
                 item.configure(background=SIDE_ACTIVE if active else SIDE_BG, foreground="#ffffff" if active else SIDE_FG,
-                               font=("Microsoft YaHei UI", 11, "bold" if active else "normal"))
+                               font=("Microsoft YaHei UI", 10, "bold" if active else "normal"))
+            self._layout()
             frame.tkraise()
 
         def tabs(self):
-            return [str(page) for page, _, _ in self.pages]
+            return [str(page) for page, _, _, _ in self.pages]
 
     update_state = {"info": None}
 
@@ -1909,8 +1958,8 @@ def main() -> None:
     g2_view.grid(row=8, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
     g2_view.columnconfigure(0, weight=1)
     g2_view.rowconfigure(0, weight=1)
-    g2_view.rowconfigure(2, weight=1)
-    g2_chord_canvas = tk.Canvas(g2_view, height=int(150 * scale), background="#ffffff", highlightthickness=1, highlightbackground="#dde3ea")
+    g2_view.rowconfigure(3, weight=1)
+    g2_chord_canvas = tk.Canvas(g2_view, height=int(135 * scale), background="#ffffff", highlightthickness=1, highlightbackground="#dde3ea")
     g2_chord_canvas.grid(row=0, column=0, sticky="nsew")
     g2_play_row = ttk.Frame(g2_view, style="Card.TFrame")
     g2_play_row.grid(row=1, column=0, sticky="w", pady=4)
@@ -1920,7 +1969,8 @@ def main() -> None:
     g2_restart_button.pack(side="left", padx=(6, 0))
     ttk.Label(g2_play_row, text="速度", style="Card.TLabel").pack(side="left", padx=(12, 4))
     g2_speed = tk.StringVar(value="100%")
-    ttk.Combobox(g2_play_row, textvariable=g2_speed, values=list(guitar.SPEEDS), state="readonly", width=6).pack(side="left")
+    g2_speed_box = ttk.Combobox(g2_play_row, textvariable=g2_speed, values=list(guitar.SPEEDS), state="readonly", width=6)
+    g2_speed_box.pack(side="left")
     ttk.Label(g2_play_row, text="听", style="Card.TLabel").pack(side="left", padx=(12, 4))
     g2_tracks = {"原曲": "mix", "伴奏（去掉吉他）": "backing", "只有吉他": "guitar"}
     g2_track = tk.StringVar(value="原曲")
@@ -1936,15 +1986,61 @@ def main() -> None:
     ttk.Checkbutton(g2_play_row, text="循环", variable=g2_loop).pack(side="left", padx=(12, 0))
     g2_time = ttk.Label(g2_play_row, text="", style="Muted.Card.TLabel")
     g2_time.pack(side="left", padx=(12, 0))
-    g2_board = tk.Canvas(g2_view, height=int(150 * scale), background="#fbf8f2", highlightthickness=1, highlightbackground="#dde3ea")
-    g2_board.grid(row=2, column=0, sticky="nsew")
+    # 练习：一段循环（在上面的小节上左键 = 起点，右键 = 终点）、渐进提速、节拍器、预备拍、升降调、调音器、跟弹检测
+    g2_practice = ttk.Frame(g2_view, style="Card.TFrame")
+    g2_practice.grid(row=2, column=0, sticky="w", pady=(0, 4))
+    ttk.Label(g2_practice, text="练第", style="Card.TLabel").pack(side="left")
+    g2_bar_a, g2_bar_b = tk.StringVar(value=""), tk.StringVar(value="")
+    ttk.Spinbox(g2_practice, textvariable=g2_bar_a, from_=1, to=999, width=3).pack(side="left", padx=2)
+    ttk.Label(g2_practice, text="–", style="Card.TLabel").pack(side="left")
+    ttk.Spinbox(g2_practice, textvariable=g2_bar_b, from_=1, to=999, width=3).pack(side="left", padx=2)
+    ttk.Label(g2_practice, text="小节", style="Card.TLabel").pack(side="left")
+    g2_ramp = tk.BooleanVar(value=False)
+    ttk.Checkbutton(g2_practice, text="渐进提速", variable=g2_ramp).pack(side="left", padx=(10, 0))
+    g2_click = tk.BooleanVar(value=False)
+    ttk.Checkbutton(g2_practice, text="节拍器", variable=g2_click).pack(side="left", padx=(8, 0))
+    g2_countin = tk.BooleanVar(value=True)
+    ttk.Checkbutton(g2_practice, text="预备拍", variable=g2_countin).pack(side="left", padx=(8, 0))
+    ttk.Label(g2_practice, text="升降调", style="Card.TLabel").pack(side="left", padx=(8, 2))
+    g2_transpose = tk.StringVar(value="0")
+    ttk.Spinbox(g2_practice, textvariable=g2_transpose, from_=-6, to=6, width=3).pack(side="left")
+    g2_export_button = ttk.Button(g2_practice, text="导出这段", state="disabled")
+    g2_export_button.pack(side="left", padx=(10, 0))
+    g2_tuner_button = ttk.Button(g2_practice, text="调音器")
+    g2_tuner_button.pack(side="left", padx=(6, 0))
+    g2_check_button = ttk.Button(g2_practice, text="跟弹检测", state="disabled")
+    g2_check_button.pack(side="left", padx=(6, 0))
+    g2_board = tk.Canvas(g2_view, height=int(145 * scale), background="#fbf8f2", highlightthickness=1, highlightbackground="#dde3ea")
+    g2_board.grid(row=3, column=0, sticky="nsew")
     ttk.Label(g2_card, textvariable=g2_status, style="Muted.Card.TLabel", wraplength=int(900 * scale)).grid(row=9, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
     def g2_current_time():
-        """当前播放到原曲的第几秒（相对这一段的开头）。"""
+        """当前播放到原曲的第几秒（相对这一段的开头）：原曲时间 = A + (播放秒数 − 预备拍) × 速度。"""
         if not g2_state["playing"]:
             return g2_state["paused_at"]
-        return g2_player.position() / 1000.0 * g2_state["speed"]
+        pos = g2_player.position() / 1000.0 - g2_state.get("lead", 0.0)
+        return g2_state.get("a", 0.0) + max(pos, 0.0) * g2_state["speed"]
+
+    def g2_bar_range():
+        """练习段落（秒）：没填就是整段。"""
+        bars = (g2_state["result"] or {}).get("bar_times") or [b["start"] for b in ((g2_state["result"] or {}).get("chords") or {}).get("bars", [])]
+        duration = float((g2_state["result"] or {}).get("duration") or 0)
+        try:
+            a = int(g2_bar_a.get()) if g2_bar_a.get().strip() else None
+            b = int(g2_bar_b.get()) if g2_bar_b.get().strip() else None
+        except ValueError:
+            return None, None
+        if not bars or (a is None and b is None):
+            return None, None
+        ta = bars[max(0, min(len(bars) - 1, (a or 1) - 1))]
+        tb = bars[b] if b is not None and b < len(bars) else duration
+        return (ta, tb) if tb > ta else (None, None)
+
+    def g2_speed_value():
+        try:
+            return max(0.3, min(1.5, float(g2_speed.get().rstrip("%")) / 100))
+        except ValueError:
+            return 1.0
 
     def g2_chord_at(t):
         info = (g2_state["result"] or {}).get("chords")
@@ -2025,6 +2121,7 @@ def main() -> None:
         t = g2_current_time()
         current = max([i for i, b in enumerate(bars) if b["start"] <= t] or [0])
         per_row = max(4, int((w - 20) // 110))
+        g2_state["bar_boxes"] = []
         first_row = max(0, current // per_row - 0) * per_row
         y = 32 + 16 + 4 * 14 + 22
         for i in range(first_row, min(len(bars), first_row + per_row * 2)):
@@ -2033,6 +2130,10 @@ def main() -> None:
             if by > h - 8:
                 break
             names = [shapes.get(n, n) if n != "N" else "–" for n in bars[i]["chords"]]
+            g2_state.setdefault("bar_boxes", []).append((bx, by - 10, bx + (w - 20) / per_row - 4, by + 10, i))
+            a_sel, b_sel = g2_bar_a.get().strip(), g2_bar_b.get().strip()
+            if (a_sel.isdigit() and int(a_sel) - 1 <= i) and (not b_sel.isdigit() or i <= int(b_sel) - 1) and (a_sel or b_sel):
+                c.create_rectangle(bx, by - 10, bx + (w - 20) / per_row - 4, by + 10, fill="#e7f0ff", outline="")
             if i == current and (g2_state["playing"] or g2_state["paused_at"] > 0):
                 c.create_rectangle(bx, by - 10, bx + (w - 20) / per_row - 4, by + 10, fill="#fff1e6", outline="")
             c.create_text(bx + 4, by, anchor="w", text=" ".join(names), font=("Microsoft YaHei UI", 10, "bold"), fill="#1f2a3d")
@@ -2086,6 +2187,14 @@ def main() -> None:
             g2_time.configure(text=f"实时和弦：{name if name != 'N' else '–'}")
             return
         guitars = (result or {}).get("guitars") or []
+        if g2_check["job"] and notes:            # 跟弹检测：刚过去的几个音标绿 / 红
+            recent = [(i, n) for i, n in enumerate(notes) if t - 2.5 < n["end"] < t]
+            for i, n in recent[-6:]:
+                if i in g2_check["hits"] or i in g2_check["missed"]:
+                    ok = i in g2_check["hits"]
+                    x_, y_ = fx(n["fret"]), sy(n["string"])
+                    c.create_oval(x_ - 7, y_ - 7, x_ + 7, y_ + 7, fill="#2f9e44" if ok else "#e03131", outline="")
+                    c.create_text(x_, y_, text="✓" if ok else "✗", fill="#ffffff", font=("Microsoft YaHei UI", 8, "bold"))
         if notes and g2_view_guitar.get() in guitars:
             wanted = guitars.index(g2_view_guitar.get())
             notes = [n for n in notes if n.get("guitar", 0) == wanted]
@@ -2142,36 +2251,76 @@ def main() -> None:
         if result.get("tuning") and not result["tuning"]["name"].startswith("标准"):
             tuning_text = f" · {result['tuning']['name']}"
         legend = " · 橙=吉他1 绿=吉他2" if len(guitars) > 1 and g2_view_guitar.get() == "全部" else ""
+        if g2_check["job"]:
+            judged = len(g2_check["hits"]) + len(g2_check["missed"])
+            legend += f" · 跟弹 {len(g2_check['hits'])}/{judged}" if judged else " · 跟弹检测中"
         g2_time.configure(text=f"{mm}:{ss:02d}" + chord_text + tuning_text + legend)
 
     g2_chord_canvas.bind("<Configure>", draw_g2_chords)
+
+    def g2_pick_bar(event, which):
+        """在和弦进行上点小节：左键 = 练习段起点，右键 = 终点。"""
+        for x0, y0, x1, y1, i in g2_state.get("bar_boxes", []):
+            if x0 <= event.x <= x1 and y0 <= event.y <= y1:
+                (g2_bar_a if which == "a" else g2_bar_b).set(str(i + 1))
+                if which == "a" and g2_bar_b.get().isdigit() and int(g2_bar_b.get()) < i + 1:
+                    g2_bar_b.set("")
+                draw_g2_chords()
+                return
+
+    g2_chord_canvas.bind("<Button-1>", lambda e: g2_pick_bar(e, "a"))
+    g2_chord_canvas.bind("<Button-3>", lambda e: g2_pick_bar(e, "b"))
     g2_board.bind("<Configure>", draw_g2_board)
 
     def g2_tick():
         if not g2_state["playing"]:
             return
-        result = g2_state["result"] or {}
         if not g2_player.playing():
             if g2_loop.get():
-                g2_play_from(0.0)
+                if g2_ramp.get() and g2_speed_value() < 0.999:      # 渐进提速：每练完一遍快 5%，到 100% 为止
+                    g2_state["internal"] = True
+                    g2_speed.set(f"{min(100, round(g2_speed_value() * 100) + 5)}%")
+                    g2_state["internal"] = False
+                    g2_status.set(f"渐进提速：这一遍 {g2_speed.get()}")
+                a, _b = g2_bar_range()
+                g2_play_from(a or 0.0, fresh=True)
             else:
                 g2_state["playing"], g2_state["paused_at"] = False, 0.0
                 g2_play_button.configure(text="▶ 播放")
+        check_play_along()
         draw_g2_board()
         draw_g2_chords()
         root.after(50, g2_tick)
 
-    def g2_play_from(t):
+    def g2_play_from(t, fresh=False):
+        """从原曲的第 t 秒开始放。fresh=True：从练习段开头放（带预备拍）。"""
         result = g2_state["result"]
         if not result:
             return
-        speed = guitar.SPEEDS.get(g2_speed.get(), 1.0)
+        speed = g2_speed_value()
         track = g2_tracks.get(g2_track.get(), "mix")
-        path = guitar.practice_audio(result, track, speed, core.find_ffmpeg())
+        a, b = g2_bar_range()
+        try:
+            semitones = max(-6, min(6, int(g2_transpose.get() or 0)))
+        except ValueError:
+            semitones = 0
+        start = a if a is not None else 0.0
+        if t < start or (b is not None and t >= b):
+            t, fresh = start, True
+        fresh = fresh or abs(t - start) < 0.05
+        path, lead = guitar.practice_segment(result, track, speed, semitones, a, b, g2_click.get(),
+                                             g2_countin.get() and fresh, core.find_ffmpeg())
+        g2_state.update(practice_path=path, a=start, lead=lead)
         g2_player.load(g2_audio=path)
         g2_state.update(speed=speed, track=track, playing=True)
-        g2_player.play("g2_audio", int(t / speed * 1000))
+        g2_player.play("g2_audio", int(((t - start) / speed + (0 if fresh else lead)) * 1000))
+        if not fresh:
+            g2_state["lead"] = lead
         g2_play_button.configure(text="⏸ 暂停")
+        g2_export_button.configure(state="normal")
+        if semitones:
+            g2_status.set(f"伴奏升 {semitones} 个半音：夹变调夹第 {semitones} 品，照谱上的指法弹" if semitones > 0 else
+                          f"伴奏降 {-semitones} 个半音：把吉他整体调低 {-semitones} 个半音，照谱上的指法弹")
         g2_tick()
 
     def g2_toggle():
@@ -2185,6 +2334,8 @@ def main() -> None:
             g2_play_from(g2_state["paused_at"])
 
     def g2_setting_changed(*_):
+        if g2_state.get("internal"):
+            return
         if g2_state["playing"]:
             t = g2_current_time()
             g2_player.stop()
@@ -2192,6 +2343,117 @@ def main() -> None:
 
     g2_speed.trace_add("write", g2_setting_changed)
     g2_track.trace_add("write", g2_setting_changed)
+    for var_ in (g2_click, g2_transpose, g2_bar_a, g2_bar_b):
+        var_.trace_add("write", g2_setting_changed)
+
+    def g2_export_segment():
+        path = g2_state.get("practice_path")
+        result = g2_state["result"]
+        if not path or not result:
+            return
+        saved_ = guitar.export_practice(result, path, core.find_ffmpeg())
+        g2_status.set("已导出：" + saved_ if saved_ else "导出失败")
+
+    g2_export_button.configure(command=g2_export_segment)
+
+    # ---- 跟弹检测：用麦克风听你弹，对照六线谱，弹对的音变绿、漏掉 / 弹错的变红
+    g2_check = {"job": None, "hits": set(), "missed": set(), "latency": 0.12}
+
+    def toggle_play_along():
+        if g2_check["job"]:
+            g2_check["job"].stop()
+            g2_check["job"] = None
+            g2_check_button.configure(text="跟弹检测")
+            return
+        if not concert.ai_available():
+            messagebox.showinfo(APP_TITLE, "需要先在“设置”里安装演唱会降噪组件。")
+            return
+        g2_check.update(hits=set(), missed=set())
+        g2_check["job"] = guitar.MicJob("pitch", lambda e: events.put(("guitar_mic", e)))
+        g2_check_button.configure(text="■ 停止检测")
+        g2_status.set("跟弹检测：戴耳机放伴奏（免得麦克风听到原曲），跟着弹；弹对的音变绿，漏掉的变红")
+
+    g2_check_button.configure(command=toggle_play_along)
+
+    # ---- 调音器（麦克风）
+    tuner_state = {"window": None, "canvas": None, "job": None, "smooth": None}
+
+    def open_tuner():
+        if tuner_state["window"] is not None:
+            tuner_state["window"].lift()
+            return
+        if not concert.ai_available():
+            messagebox.showinfo(APP_TITLE, "需要先在“设置”里安装演唱会降噪组件。")
+            return
+        win = tk.Toplevel(root)
+        win.title("调音器")
+        win.transient(root)
+        canvas = tk.Canvas(win, width=int(420 * scale), height=int(230 * scale), background="#172033", highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+        tuner_state.update(window=win, canvas=canvas, smooth=None)
+        tuner_state["job"] = guitar.MicJob("pitch", lambda e: events.put(("guitar_mic", e)))
+        draw_tuner({"hz": 0})
+
+        def close():
+            if tuner_state["job"]:
+                tuner_state["job"].stop()
+            tuner_state.update(window=None, canvas=None, job=None)
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", close)
+
+    def draw_tuner(event):
+        c = tuner_state["canvas"]
+        if c is None:
+            return
+        c.delete("all")
+        w, h = int(c.winfo_width()) or 420, int(c.winfo_height()) or 230
+        tuning = ((g2_state["result"] or {}).get("tuning") or {}).get("pitches") or chords.STANDARD_TUNING
+        names = chords.SHARP_NAMES
+        c.create_text(w / 2, 18, text="调音器：对着麦克风弹一根空弦", fill="#8d99ab", font=("Microsoft YaHei UI", 9))
+        hz = event.get("hz") or 0
+        if not hz:
+            c.create_text(w / 2, h / 2, text="—", fill="#dfe6f0", font=("Microsoft YaHei UI", 40, "bold"))
+            return
+        midi = event.get("midi", 0)
+        tuner_state["smooth"] = midi if tuner_state["smooth"] is None or abs(midi - tuner_state["smooth"]) > 0.7 else \
+            tuner_state["smooth"] * 0.6 + midi * 0.4
+        midi = tuner_state["smooth"]
+        near = round(midi)
+        cents = (midi - near) * 100
+        ok = abs(cents) < 5
+        color = "#51cf66" if ok else "#ffd43b" if abs(cents) < 15 else "#ff6b6b"
+        c.create_text(w / 2, h * 0.42, text=f"{names[near % 12]}{near // 12 - 1}", fill=color, font=("Microsoft YaHei UI", 40, "bold"))
+        c.create_text(w / 2, h * 0.62, text=f"{hz:.1f} Hz · {cents:+.0f} 音分" + ("  准了" if ok else "  调高一点" if cents < 0 else "  调低一点"),
+                      fill="#dfe6f0", font=("Microsoft YaHei UI", 10))
+        y = h * 0.8
+        c.create_line(40, y, w - 40, y, fill="#8d99ab", width=2)
+        c.create_line(w / 2, y - 12, w / 2, y + 12, fill="#dfe6f0", width=2)
+        x = w / 2 + max(-50, min(50, cents)) / 50 * (w / 2 - 40)
+        c.create_oval(x - 8, y - 8, x + 8, y + 8, fill=color, outline="")
+        string = min(range(6), key=lambda k: abs(tuning[k] - midi))
+        c.create_text(w / 2, h - 12, text=f"最接近：{6 - string} 弦（{names[tuning[string] % 12]}）", fill="#8d99ab",
+                      font=("Microsoft YaHei UI", 8))
+
+    g2_tuner_button.configure(command=open_tuner)
+
+    def check_play_along():
+        """每一帧：已经过去的音如果没弹到，记为漏掉。"""
+        if not g2_check["job"]:
+            return
+        t = g2_current_time()
+        for i, n in enumerate((g2_state["result"] or {}).get("notes") or []):
+            if n["end"] + 0.25 < t and n["start"] > t - 8 and i not in g2_check["hits"]:
+                g2_check["missed"].add(i)
+
+    def on_mic_pitch(event):
+        if not g2_check["job"] or not g2_state["playing"] or not event.get("hz"):
+            return
+        t = g2_current_time() - g2_check["latency"]
+        midi = event.get("midi", 0)
+        for i, n in enumerate((g2_state["result"] or {}).get("notes") or []):
+            if n["start"] - 0.15 <= t <= max(n["end"], n["start"] + 0.2) and abs(n["pitch"] - midi) < 0.6:
+                g2_check["hits"].add(i)
+                g2_check["missed"].discard(i)
     g2_play_button.configure(command=g2_toggle)
     g2_restart_button.configure(command=lambda: (g2_player.stop(), g2_state.update(paused_at=0.0, playing=False), g2_play_from(0.0)))
 
@@ -2315,6 +2577,18 @@ def main() -> None:
     g2_start_button.configure(command=start_guitar)
 
     def handle_guitar_event(kind, value):
+        if kind == "guitar_mic":
+            if value.get("type") == "pitch":
+                on_mic_pitch(value)
+                if tuner_state["window"] is not None:
+                    draw_tuner(value)
+            elif value.get("type") == "mic_error":
+                messagebox.showerror(APP_TITLE, "麦克风：" + value.get("message", ""))
+            elif value.get("type") == "mic_stopped":
+                if g2_check["job"] and g2_check["job"].error:
+                    g2_check["job"] = None
+                    g2_check_button.configure(text="跟弹检测")
+            return
         if kind == "guitar_live":
             if g2_live["on"]:
                 if value.get("name") != g2_live["chord"]:
@@ -2362,6 +2636,9 @@ def main() -> None:
             g2_sheet_button.configure(state="normal" if value["sheet"] else "disabled")
             g2_play_button.configure(state="normal")
             g2_restart_button.configure(state="normal")
+            g2_check_button.configure(state="normal" if value.get("notes") else "disabled")
+            g2_bar_a.set("")
+            g2_bar_b.set("")
             g2_view_box.configure(values=["全部"] + list(value.get("guitars") or []))
             g2_view_guitar.set("全部")
             g2_tracks.clear()
@@ -2394,6 +2671,466 @@ def main() -> None:
             g2_status.set("失败：" + value.splitlines()[0][:120] if value != "已取消" else "已取消")
             if value != "已取消":
                 messagebox.showerror(APP_TITLE, value)
+
+    # ------------------------------------------------------------- 创作：和弦与音阶
+    theory_tab = ttk.Frame(notebook, padding=8)
+    notebook.add(theory_tab, text="和弦与音阶")
+    t_card = card(theory_tab)
+    t_card.columnconfigure(0, weight=1)
+    t_card.rowconfigure(6, weight=1)
+    ttk.Label(t_card, text="和弦与音阶", style="Card.TLabel", font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, sticky="w")
+    ttk.Label(t_card, text="写歌用：选调和调式 → 点调内和弦搭进行（会推荐下一个和弦）→ 试听 → 指板上看音阶和和弦音，写旋律、Solo 时参考",
+              style="Muted.Card.TLabel").grid(row=1, column=0, sticky="w", pady=(1, 6))
+    t_opts = ttk.Frame(t_card, style="Card.TFrame")
+    t_opts.grid(row=2, column=0, sticky="w")
+    t_key = tk.StringVar(value=prefs.get("theory_key", "C"))
+    t_scale = tk.StringVar(value=prefs.get("theory_scale", "大调（自然大调）"))
+    t_seventh = tk.BooleanVar(value=False)
+    t_labels = tk.StringVar(value="音名")
+    t_tuning = tk.StringVar(value="标准 EADGBE")
+    t_bpm = tk.StringVar(value="90")
+    ttk.Label(t_opts, text="调", style="Card.TLabel").pack(side="left")
+    ttk.Combobox(t_opts, textvariable=t_key, values=chords.SHARP_NAMES, state="readonly", width=4).pack(side="left", padx=(4, 10))
+    ttk.Label(t_opts, text="调式", style="Card.TLabel").pack(side="left")
+    ttk.Combobox(t_opts, textvariable=t_scale, values=list(theory.SCALES), state="readonly", width=18).pack(side="left", padx=(4, 10))
+    ttk.Checkbutton(t_opts, text="七和弦", variable=t_seventh).pack(side="left")
+    ttk.Label(t_opts, text="指板显示", style="Card.TLabel").pack(side="left", padx=(10, 4))
+    ttk.Combobox(t_opts, textvariable=t_labels, values=["音名", "级数（1 b3 5…）"], state="readonly", width=12).pack(side="left")
+    ttk.Label(t_opts, text="调弦", style="Card.TLabel").pack(side="left", padx=(10, 4))
+    ttk.Combobox(t_opts, textvariable=t_tuning, values=list(guitar_worker.TUNINGS), state="readonly", width=12).pack(side="left")
+    ttk.Label(t_opts, text="速度", style="Card.TLabel").pack(side="left", padx=(10, 4))
+    ttk.Spinbox(t_opts, textvariable=t_bpm, from_=40, to=220, width=4).pack(side="left")
+
+    t_chords_row = ttk.Frame(t_card, style="Card.TFrame")
+    t_chords_row.grid(row=3, column=0, sticky="w", pady=(8, 2))
+    t_suggest_row = ttk.Frame(t_card, style="Card.TFrame")
+    t_suggest_row.grid(row=4, column=0, sticky="w", pady=(2, 4))
+    t_state = {"progression": [], "selected": None, "playing": False, "preview": None}
+    t_player = concert.Player()
+
+    t_prog_row = ttk.Frame(t_card, style="Card.TFrame")
+    t_prog_row.grid(row=5, column=0, sticky="ew")
+    t_prog_row.columnconfigure(0, weight=1)
+    t_prog = tk.Canvas(t_prog_row, height=int(118 * scale), background="#ffffff", highlightthickness=1, highlightbackground="#dde3ea")
+    t_prog.grid(row=0, column=0, sticky="ew")
+    t_buttons = ttk.Frame(t_prog_row, style="Card.TFrame")
+    t_buttons.grid(row=1, column=0, sticky="w", pady=4)
+    t_board = tk.Canvas(t_card, height=int(190 * scale), background="#fbf8f2", highlightthickness=1, highlightbackground="#dde3ea")
+    t_board.grid(row=6, column=0, sticky="nsew")
+    t_status = tk.StringVar(value="点上面的和弦加进进行；点进行里的和弦在指板上看它的和弦音，右键删掉")
+    ttk.Label(t_card, textvariable=t_status, style="Muted.Card.TLabel").grid(row=7, column=0, sticky="w", pady=(4, 0))
+
+    def t_diatonic():
+        return theory.diatonic_chords(chords.SHARP_NAMES.index(t_key.get()), t_scale.get(), t_seventh.get())
+
+    def t_add(name, degree=None):
+        t_state["progression"].append({"name": name, "degree": degree})
+        t_state["selected"] = len(t_state["progression"]) - 1
+        t_refresh()
+
+    def t_refresh(*_):
+        prefs.update(theory_key=t_key.get(), theory_scale=t_scale.get())
+        for row in (t_chords_row, t_suggest_row):
+            for widget in row.winfo_children():
+                widget.destroy()
+        ttk.Label(t_chords_row, text="调内和弦：", style="Card.TLabel").pack(side="left")
+        diatonic = t_diatonic()
+        for chord_ in diatonic:
+            ttk.Button(t_chords_row, text=f"{chord_['roman']}  {chord_['name']}", width=10,
+                       command=lambda c_=chord_: t_add(c_["name"], c_["degree"])).pack(side="left", padx=2)
+        last = t_state["progression"][-1]["degree"] if t_state["progression"] else None
+        ttk.Label(t_suggest_row, text="推荐下一个：", style="Card.TLabel").pack(side="left")
+        for degree in theory.suggest_next(last, t_scale.get()):
+            chord_ = diatonic[degree]
+            ttk.Button(t_suggest_row, text=f"→ {chord_['name']}", command=lambda c_=chord_: t_add(c_["name"], c_["degree"])).pack(side="left", padx=2)
+        ttk.Label(t_suggest_row, text="常用进行：", style="Card.TLabel").pack(side="left", padx=(14, 4))
+        presets_ = theory.progressions(t_scale.get())
+        choice = tk.StringVar(value="选一个…")
+        box = ttk.Combobox(t_suggest_row, textvariable=choice, values=list(presets_), state="readonly", width=30)
+        box.pack(side="left")
+
+        def use(_e=None):
+            degrees = presets_.get(choice.get())
+            if degrees:
+                t_state["progression"] = [{"name": diatonic[d]["name"], "degree": d} for d in degrees]
+                t_state["selected"] = 0
+                t_refresh()
+        box.bind("<<ComboboxSelected>>", use)
+        draw_t_prog()
+        draw_t_board()
+
+    for var_ in (t_key, t_scale, t_seventh):
+        var_.trace_add("write", t_refresh)
+    t_labels.trace_add("write", lambda *_: draw_t_board())
+    t_tuning.trace_add("write", lambda *_: draw_t_board())
+
+    def draw_t_prog(_e=None):
+        c = t_prog
+        c.delete("all")
+        w = max(c.winfo_width(), 300)
+        prog = t_state["progression"]
+        if not prog:
+            c.create_text(w / 2, 55, text="和弦进行会显示在这里（点上面的和弦添加）", fill="#8a94a6", font=("Microsoft YaHei UI", 9))
+            return
+        t_state["boxes"] = []
+        for i, item in enumerate(prog[:12]):
+            x = 10 + i * 82
+            active = i == t_state["selected"]
+            c.create_rectangle(x, 4, x + 76, 112, fill="#fff1e6" if active else "#ffffff", outline="#d9480f" if active else "#dde3ea")
+            draw_chord_diagram(c, x + 12, 16, item["name"], chords.shape(item["name"])[0], 0.9, active)
+            t_state["boxes"].append((x, x + 76, i))
+        if len(prog) > 12:
+            c.create_text(w - 10, 100, anchor="e", text=f"…共 {len(prog)} 个", fill="#8a94a6", font=("Microsoft YaHei UI", 8))
+
+    def t_pick(event, remove=False):
+        for x0, x1, i in t_state.get("boxes", []):
+            if x0 <= event.x <= x1:
+                if remove:
+                    del t_state["progression"][i]
+                    t_state["selected"] = None
+                    t_refresh()
+                else:
+                    t_state["selected"] = i
+                    draw_t_prog()
+                    draw_t_board()
+                return
+
+    t_prog.bind("<Configure>", draw_t_prog)
+    t_prog.bind("<Button-1>", lambda e: t_pick(e))
+    t_prog.bind("<Button-3>", lambda e: t_pick(e, remove=True))
+
+    def draw_t_board(_e=None):
+        c = t_board
+        c.delete("all")
+        w, h = max(c.winfo_width(), 300), max(c.winfo_height(), 120)
+        tuning = guitar_worker.TUNINGS.get(t_tuning.get(), chords.STANDARD_TUNING)
+        tonic = chords.SHARP_NAMES.index(t_key.get())
+        scale_pcs = theory.scale_notes(tonic, t_scale.get())
+        flats = theory.uses_flats(tonic, t_scale.get())
+        selected = t_state["progression"][t_state["selected"]]["name"] if t_state["selected"] is not None and \
+            t_state["selected"] < len(t_state["progression"]) else None
+        tones = chords.chord_tones(selected) if selected else set()
+        frets = 15
+        left, right, top, bottom = 46, w - 12, 30, h - 22
+        fx = lambda f: left + (right - left) * (f - 0.5) / frets if f > 0 else left - 14
+        sy = lambda s_: top + (bottom - top) * (5 - s_) / 5
+        for f in range(frets + 1):
+            x = left + (right - left) * f / frets
+            c.create_line(x, top, x, bottom, fill="#3b2f25" if f == 0 else "#b8a58c", width=4 if f == 0 else 1)
+            if f in (3, 5, 7, 9, 12, 15):
+                c.create_text(fx(f), bottom + 14, text=str(f), font=("Microsoft YaHei UI", 7), fill="#8a7a66")
+        for s_ in range(6):
+            c.create_line(left, sy(s_), right, sy(s_), fill="#6b5b4b", width=1 + (5 - s_) * 0.35)
+            c.create_text(8, sy(s_), text=chords.SHARP_NAMES[tuning[s_] % 12], font=("Microsoft YaHei UI", 7), fill="#8a7a66")
+        for s_ in range(6):
+            for f in range(frets + 1):
+                pc = (tuning[s_] + f) % 12
+                if pc not in scale_pcs and pc not in tones:
+                    continue
+                x, y = fx(f), sy(s_)
+                is_root = pc == tonic
+                in_chord = pc in tones
+                fill = "#d9480f" if in_chord else ("#1f2a3d" if is_root else "#ffffff")
+                outline = "#d9480f" if in_chord else "#1f2a3d"
+                r_ = 9 if in_chord or is_root else 7
+                c.create_oval(x - r_, y - r_, x + r_, y + r_, fill=fill, outline=outline, width=1.5)
+                label = theory.INTERVAL_NAMES[(pc - tonic) % 12] if t_labels.get().startswith("级数") else theory.note_name(pc, flats)
+                c.create_text(x, y, text=label, font=("Microsoft YaHei UI", 7, "bold"),
+                              fill="#ffffff" if (in_chord or is_root) else "#1f2a3d")
+        c.create_text(right, 11, anchor="e", font=("Microsoft YaHei UI", 8), fill="#5b6678",
+                      text=f"{t_key.get()} {t_scale.get()}：黑 = 主音，白 = 音阶里的音" + (f"，橙 = {selected} 的和弦音" if selected else ""))
+
+    t_board.bind("<Configure>", draw_t_board)
+
+    def t_play():
+        names = [p_["name"] for p_ in t_state["progression"]]
+        if not names:
+            return
+        try:
+            bpm = max(40, min(220, float(t_bpm.get())))
+        except ValueError:
+            bpm = 90
+        path = os.path.join(tempfile.gettempdir(), "audio_studio_progression.wav")
+        t_player.close()
+        theory.render_progression(names, bpm, path)
+        t_player.load(t_prog_audio=path)
+        t_player.play("t_prog_audio", 0)
+        t_state.update(playing=True, bpm=bpm)
+        t_tick()
+
+    def t_tick():
+        if not t_state["playing"]:
+            return
+        if not t_player.playing():
+            t_state["playing"] = False
+            return
+        index = int(t_player.position() / 1000 / (4 * 60 / t_state["bpm"]))
+        if index < len(t_state["progression"]) and index != t_state["selected"]:
+            t_state["selected"] = index
+            draw_t_prog()
+            draw_t_board()
+        root.after(80, t_tick)
+
+    def t_undo():
+        if t_state["progression"]:
+            t_state["progression"].pop()
+            t_state["selected"] = len(t_state["progression"]) - 1 if t_state["progression"] else None
+            t_refresh()
+
+    def t_clear():
+        t_state["progression"] = []
+        t_state["selected"] = None
+        t_refresh()
+
+    def t_export_midi():
+        names = [p_["name"] for p_ in t_state["progression"]]
+        if not names:
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".mid", filetypes=[("MIDI", "*.mid")],
+                                            initialfile=f"和弦进行_{t_key.get()}.mid")
+        if path:
+            try:
+                bpm = float(t_bpm.get())
+            except ValueError:
+                bpm = 90
+            theory.write_midi(names, bpm, path)
+            t_status.set("已导出 MIDI：" + path)
+
+    def t_save_idea():
+        names = [p_["name"] for p_ in t_state["progression"]]
+        if not names:
+            return
+        try:
+            bpm = float(t_bpm.get())
+        except ValueError:
+            bpm = 90
+        folder = ideas.new_idea(ideas_dir(), f"和弦进行 {' '.join(names[:4])}", kind="progression")
+        theory.render_progression(names, bpm, str(folder / "试听.wav"))
+        theory.write_midi(names, bpm, str(folder / "和弦进行.mid"))
+        ideas.update(folder, key=f"{t_key.get()} {t_scale.get()}", tempo=bpm, chords=names, audio="试听.wav")
+        t_status.set("已存进灵感本：" + folder.name)
+        refresh_ideas()
+
+    for text_, cmd in (("▶ 试听", t_play), ("■ 停", lambda: (t_player.stop(), t_state.update(playing=False))), ("撤销", t_undo),
+                       ("清空", t_clear), ("导出 MIDI", t_export_midi), ("存进灵感本", t_save_idea)):
+        ttk.Button(t_buttons, text=text_, command=cmd).pack(side="left", padx=(0, 6))
+    root.after(200, t_refresh)
+
+    # ------------------------------------------------------------- 创作：灵感本
+    ideas_tab = ttk.Frame(notebook, padding=8)
+    notebook.add(ideas_tab, text="灵感本")
+    i_card = card(ideas_tab)
+    i_card.columnconfigure(0, weight=1)
+    i_card.rowconfigure(4, weight=1)
+    ttk.Label(i_card, text="灵感本", style="Card.TLabel", font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, sticky="w")
+    ttk.Label(i_card, text="对着麦克风弹一段 riff / 旋律，停下来就自动扒成六线谱和和弦，存进灵感本；以后可以试听、打开谱、拿去吉他页跟练",
+              style="Muted.Card.TLabel").grid(row=1, column=0, sticky="w", pady=(1, 6))
+
+    def ideas_dir():
+        folder = prefs.get("ideas_dir") or os.path.join(saved["outdir"], "灵感本")
+        os.makedirs(folder, exist_ok=True)
+        return folder
+
+    i_bar = ttk.Frame(i_card, style="Card.TFrame")
+    i_bar.grid(row=2, column=0, sticky="ew")
+    i_record_button = ttk.Button(i_bar, text="● 录一段（麦克风）", style="Primary.TButton")
+    i_record_button.pack(side="left")
+    i_import_button = ttk.Button(i_bar, text="导入音频…")
+    i_import_button.pack(side="left", padx=(8, 0))
+    ttk.Button(i_bar, text="调音器", command=lambda: open_tuner()).pack(side="left", padx=(8, 0))
+    ttk.Button(i_bar, text="打开灵感本文件夹", command=lambda: open_file(ideas_dir())).pack(side="left", padx=(8, 0))
+    i_level = ttk.Progressbar(i_bar, maximum=60, length=int(160 * scale))
+    i_level.pack(side="left", padx=(14, 0))
+    i_status = tk.StringVar(value="")
+    ttk.Label(i_card, textvariable=i_status, style="Muted.Card.TLabel").grid(row=3, column=0, sticky="w", pady=(4, 4))
+    i_list_frame = ttk.Frame(i_card, style="Card.TFrame")
+    i_list_frame.grid(row=4, column=0, sticky="nsew")
+    i_list_frame.columnconfigure(0, weight=1)
+    i_list_frame.rowconfigure(0, weight=1)
+    columns = ("name", "date", "key", "tempo", "chords", "tags")
+    i_tree = ttk.Treeview(i_list_frame, columns=columns, show="headings", selectmode="browse")
+    for col, text_, width in (("name", "名称", 220), ("date", "时间", 120), ("key", "调", 90), ("tempo", "速度", 60),
+                              ("chords", "和弦", 260), ("tags", "标签", 120)):
+        i_tree.heading(col, text=text_)
+        i_tree.column(col, width=int(width * scale), anchor="w")
+    i_tree.grid(row=0, column=0, sticky="nsew")
+    i_scroll = ttk.Scrollbar(i_list_frame, orient="vertical", command=i_tree.yview)
+    i_scroll.grid(row=0, column=1, sticky="ns")
+    i_tree.configure(yscrollcommand=i_scroll.set)
+    i_actions = ttk.Frame(i_card, style="Card.TFrame")
+    i_actions.grid(row=5, column=0, sticky="w", pady=(6, 0))
+    i_state = {"items": {}, "job": None, "folder": None, "busy": False}
+    i_player = concert.Player()
+
+    def refresh_ideas():
+        i_tree.delete(*i_tree.get_children())
+        i_state["items"] = {}
+        for item in ideas.list_ideas(ideas_dir()):
+            iid = i_tree.insert("", "end", values=(item.get("name", ""), item.get("created", ""), item.get("key", ""),
+                                                   f"{item['tempo']:.0f}" if item.get("tempo") else "",
+                                                   " ".join(item.get("chords", [])[:10]), " ".join(item.get("tags", []))))
+            i_state["items"][iid] = item
+
+    def i_selected():
+        sel = i_tree.selection()
+        return i_state["items"].get(sel[0]) if sel else None
+
+    def i_play():
+        item = i_selected()
+        if not item:
+            return
+        audio = item.get("audio")
+        path = os.path.join(item["folder"], audio) if audio else None
+        if not path or not os.path.isfile(path):
+            return
+        i_player.close()
+        i_player.load(i_audio=path)
+        i_player.play("i_audio", 0)
+
+    def i_open_sheet():
+        item = i_selected()
+        if item and item.get("sheet") and os.path.isfile(item["sheet"]):
+            open_file(item["sheet"])
+        elif item:
+            open_file(item["folder"])
+
+    def i_practice():
+        item = i_selected()
+        result = ideas.load_result(item["folder"]) if item else None
+        if not result:
+            messagebox.showinfo(APP_TITLE, "这个灵感还没有扒出来的谱（和弦进行可以在“和弦与音阶”页试听）。")
+            return
+        notebook.select(guitar_tab)
+        handle_guitar_event("guitar_done", result)
+
+    def i_rename():
+        item = i_selected()
+        if not item:
+            return
+        from tkinter import simpledialog
+        name = simpledialog.askstring(APP_TITLE, "新名字：", initialvalue=item.get("name", ""), parent=root)
+        if name:
+            ideas.update(item["folder"], name=name)
+            refresh_ideas()
+
+    def i_tags():
+        item = i_selected()
+        if not item:
+            return
+        from tkinter import simpledialog
+        text_ = simpledialog.askstring(APP_TITLE, "标签（用空格分开，比如：后摇 前奏 开放调弦）：",
+                                       initialvalue=" ".join(item.get("tags", [])), parent=root)
+        if text_ is not None:
+            ideas.update(item["folder"], tags=text_.split())
+            refresh_ideas()
+
+    def i_delete():
+        item = i_selected()
+        if not item:
+            return
+        if messagebox.askyesno(APP_TITLE, f"把“{item.get('name', '')}”移到灵感本里的“已删除”文件夹吗？（后悔了还能从那里找回来）"):
+            i_player.close()
+            ideas.remove(item["folder"], ideas_dir())
+            refresh_ideas()
+
+    for text_, cmd in (("▶ 播放", i_play), ("■", lambda: i_player.stop()), ("打开谱", i_open_sheet),
+                       ("去吉他页跟练", i_practice), ("改名…", i_rename), ("标签…", i_tags), ("删除", i_delete)):
+        ttk.Button(i_actions, text=text_, command=cmd).pack(side="left", padx=(0, 6))
+    i_tree.bind("<Double-1>", lambda _e: i_play())
+
+    def i_transcribe(folder, audio_path, direct):
+        """把录好的 / 导入的音频扒成谱，结果存进这个灵感的文件夹。"""
+        i_state["busy"] = True
+        i_status.set("正在扒谱……")
+        do_solo = transcribe.available() and bool(transcribe.get_token())
+        ffmpeg = core.find_ffmpeg()
+
+        def worker():
+            try:
+                result = guitar.run(audio_path, ffmpeg, str(folder), True, do_solo, False, g2_size.get(), False,
+                                    log=lambda t: events.put(("ideas_log", t)),
+                                    progress=lambda f, s="": events.put(("ideas_log", f"{s} · {f * 100:.0f}%")),
+                                    direct=direct, one_string=guitar.FINGERINGS.get(g2_fingering.get(), False))
+                result = ideas.keep_result(folder, result)
+                info = result.get("chords") or {}
+                names = []
+                for seg in info.get("segments", []):
+                    if seg["name"] != "N" and (not names or names[-1] != seg["name"]):
+                        names.append(seg["name"])
+                sheet = next((p_ for p_ in result.get("exported", []) if p_.endswith(".pdf")),
+                             next((p_ for p_ in result.get("exported", []) if p_.endswith(".html")), ""))
+                ideas.update(folder, key=info.get("key", ""), tempo=result.get("tempo", 0), chords=names, sheet=sheet)
+                events.put(("ideas_done", str(folder)))
+            except Exception as error:
+                events.put(("ideas_error", str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def i_record():
+        if i_state["job"]:
+            i_state["job"].stop()
+            i_record_button.configure(state="disabled", text="正在停止……")
+            return
+        if i_state["busy"]:
+            return
+        if not concert.ai_available():
+            messagebox.showinfo(APP_TITLE, "需要先在“设置”里安装演唱会降噪组件。")
+            return
+        folder = ideas.new_idea(ideas_dir(), time.strftime("灵感 %m-%d %H:%M"))
+        i_state["folder"] = folder
+        wav = str(folder / "录音.wav")
+        ideas.update(folder, audio="录音.wav")
+        i_state["job"] = guitar.MicJob("record", lambda e: events.put(("ideas_mic", e)), out_wav=wav)
+        i_record_button.configure(text="■ 停止并扒谱")
+        i_status.set("正在录音：弹吧！（离麦克风近一点；弹完点“停止并扒谱”）")
+        refresh_ideas()
+
+    def i_import():
+        if i_state["busy"]:
+            return
+        path = filedialog.askopenfilename(filetypes=concert.MEDIA_TYPES)
+        if not path:
+            return
+        only_guitar = messagebox.askyesno(APP_TITLE, "这段音频里只有吉他吗？\n（是：直接扒，快；否：先把吉他从乐队里分离出来）")
+        folder = ideas.new_idea(ideas_dir(), Path(path).stem)
+        target = folder / ("原音频" + Path(path).suffix)
+        shutil.copyfile(path, target)
+        ideas.update(folder, audio=target.name)
+        refresh_ideas()
+        i_transcribe(folder, str(target), only_guitar)
+
+    i_record_button.configure(command=i_record)
+    i_import_button.configure(command=i_import)
+
+    def handle_ideas_event(kind, value):
+        if kind == "ideas_mic":
+            if value.get("type") == "mic_level":
+                i_level.configure(value=max(0, min(60, value.get("db", -60) + 60)))
+                i_status.set(f"正在录音：{value.get('seconds', 0):.0f} 秒")
+            elif value.get("type") == "mic_error":
+                messagebox.showerror(APP_TITLE, "麦克风：" + value.get("message", ""))
+            elif value.get("type") == "mic_stopped":
+                job, folder = i_state["job"], i_state["folder"]
+                i_state["job"] = None
+                i_level.configure(value=0)
+                i_record_button.configure(state="normal", text="● 录一段（麦克风）")
+                wav = str(folder / "录音.wav") if folder else ""
+                if job and not job.error and wav and os.path.isfile(wav) and os.path.getsize(wav) > 44100 * 2 * 2:
+                    i_transcribe(folder, wav, True)
+                elif job and not job.error:
+                    i_status.set("录音太短（不到 2 秒）")
+        elif kind == "ideas_log":
+            i_status.set(value)
+        elif kind == "ideas_done":
+            i_state["busy"] = False
+            i_status.set("扒好了，已存进灵感本")
+            refresh_ideas()
+            root.bell()
+        elif kind == "ideas_error":
+            i_state["busy"] = False
+            i_status.set("扒谱失败：" + value.splitlines()[0][:100])
+
+    root.after(300, refresh_ideas)
 
     # ------------------------------------------------------------- 设置（语言、更新、AI 组件、处理选项都在这里）
     settings_tab = ttk.Frame(notebook, padding=8)
@@ -2565,6 +3302,30 @@ def main() -> None:
         threading.Thread(target=worker, daemon=True).start()
 
     apply_hardware(first=True)
+
+    # 导航：记住折叠的组和上次打开的页面
+    notebook.collapsed = set(prefs.get("nav_collapsed", []))
+    notebook._layout()
+
+    def nav_changed(groups):
+        prefs["nav_collapsed"] = groups
+        concert.save_presets(presets)
+    notebook.on_collapse = nav_changed
+    last_page = prefs.get("last_page")
+    for frame, _item, _bottom, text in notebook.pages:
+        if text == last_page:
+            notebook.select(frame)
+    original_select = notebook.select
+
+    def remember_select(frame=None):
+        result = original_select(frame)
+        if frame is not None:
+            text = next((t for f, _i, _b, t in notebook.pages if f is notebook.current), None)
+            if text and text != prefs.get("last_page") and text != "设置":
+                prefs["last_page"] = text
+                concert.save_presets(presets)
+        return result
+    notebook.select = remember_select
     redetect()   # 启动后在后台重新检查一次（换了显卡、升级内存也能跟上）
 
     def fmt_bytes(n):
@@ -2786,6 +3547,8 @@ def main() -> None:
                     handle_score_event(kind, value)
                 elif kind.startswith("guitar_"):
                     handle_guitar_event(kind, value)
+                elif kind.startswith("ideas_"):
+                    handle_ideas_event(kind, value)
                 elif kind == "update_status":
                     info, silent = value
                     update_state["info"] = info
