@@ -1872,6 +1872,11 @@ def main() -> None:
     ttk.Label(g2_range, text="调弦", style="Card.TLabel").pack(side="left", padx=(10, 4))
     g2_tuning = tk.StringVar(value="自动")
     ttk.Combobox(g2_range, textvariable=g2_tuning, values=guitar.TUNING_CHOICES, state="readonly", width=12).pack(side="left")
+    ttk.Label(g2_range, text="指法", style="Card.TLabel").pack(side="left", padx=(10, 4))
+    g2_fingering = tk.StringVar(value=prefs.get("fingering", "顺手（推荐）"))
+    g2_fingering_box = ttk.Combobox(g2_range, textvariable=g2_fingering, values=list(guitar.FINGERINGS), state="readonly", width=11)
+    g2_fingering_box.pack(side="left")
+    g2_fingering.trace_add("write", lambda *_: (prefs.update(fingering=g2_fingering.get()), concert.save_presets(presets)))
     ttk.Checkbutton(g2_range, text="只扒一段", variable=g2_clip).pack(side="left", padx=(14, 0))
     ttk.Label(g2_range, text="从", style="Card.TLabel").pack(side="left", padx=(10, 4))
     ttk.Entry(g2_range, textvariable=g2_from, width=9).pack(side="left")
@@ -2287,6 +2292,7 @@ def main() -> None:
         g2_status.set("正在扒谱……" + (f"（预计{estimate_text(keys, seconds)}）" if estimate_text(keys, seconds) else ""))
         options = (g2_chords.get(), g2_solo.get(), g2_mono.get(), g2_size.get(), g2_clean.get())
         post_rock, tuning_choice = bool(g2_post.get()), g2_tuning.get()
+        one_string = guitar.FINGERINGS.get(g2_fingering.get(), False)
         output_dir = g2_output_dir.get().strip() or os.path.dirname(source)
 
         def worker():
@@ -2295,7 +2301,8 @@ def main() -> None:
                 result = guitar.run(source, ffmpeg, output_dir, *options,
                                     log=lambda t: events.put(("guitar_log", t)),
                                     progress=lambda f, s="": events.put(("guitar_progress", (f, s))),
-                                    start=clip_start, length=clip_length, post_rock=post_rock, tuning=tuning_choice)
+                                    start=clip_start, length=clip_length, post_rock=post_rock, tuning=tuning_choice,
+                                    one_string=one_string)
                 learn_speed(keys, seconds, time.time() - began)
                 events.put(("guitar_done", result))
             except concert.Cancelled:

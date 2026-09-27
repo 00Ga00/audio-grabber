@@ -298,6 +298,9 @@ AI 组件|AI components|KI-Komponenten
 第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
 录音组件|Recorder|Rekorder
 ● 有新版本|● Update available|● Update verfügbar
+指法|Fingering|Fingersatz
+顺手（推荐）|Comfortable (recommended)|Bequem (empfohlen)
+一根弦优先|One string first|Eine Saite zuerst
 后摇模式|Post-rock mode|Post-Rock-Modus
 调弦|Tuning|Stimmung
 自动|Auto|Automatisch

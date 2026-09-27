@@ -36,12 +36,14 @@ def _ensure_guitarpro(log) -> None:
         raise RuntimeError("Guitar Pro 文件组件安装失败，请检查网络后重试。")
 
 
+FINGERINGS = {"顺手（推荐）": False, "一根弦优先": True}
 TUNING_CHOICES = ["自动", "标准 EADGBE", "降半音 Eb", "Drop D", "DADGAD", "Open D", "Drop C#"]
 
 
 def run(source: str, ffmpeg: str, output_dir: str, do_chords: bool, do_solo: bool, mono: bool, size_label: str,
         clean: bool, log=lambda _m: None, progress=lambda _f, _s="": None,
-        start: float | None = None, length: float | None = None, post_rock: bool = False, tuning: str = "自动") -> dict:
+        start: float | None = None, length: float | None = None, post_rock: bool = False, tuning: str = "自动",
+        one_string: bool = False) -> dict:
     if not concert.ai_available():
         raise RuntimeError("需要先在“设置”里安装演唱会降噪组件（吉他分离要用）。")
     if do_solo:
@@ -76,6 +78,7 @@ def run(source: str, ffmpeg: str, output_dir: str, do_chords: bool, do_solo: boo
     args += ["--mono"] if mono else []
     args += ["--post-rock"] if post_rock else []
     args += ["--tuning", tuning]
+    args += ["--one-string"] if one_string else []
     args += concert._overlap_args()
     concert.run_worker(args, on_event, script=WORKER)
     result = json.loads((folder / "result.json").read_text(encoding="utf-8"))

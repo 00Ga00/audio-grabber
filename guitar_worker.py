@@ -624,14 +624,16 @@ def positions(pitch: int, tuning=ch.STANDARD_TUNING) -> list[tuple[int, int]]:
 
 
 def _tab_dp(groups, links=None, times=None, slides=None, tuning=ch.STANDARD_TUNING, overlaps=None, ends=None,
-            open_ok=False):
+            open_ok=False, one_string=False):
     """按“弹起来顺不顺手”选把位的动态规划（整首一起算，不是一个音一个音地看）。
     左手有一个把位（食指在第几品，四个手指管 4 个品），代价包括：
     - 换把：越远越贵；句子越快越贵；前面有休止（手有时间挪）就便宜
     - 换弦：能在一根弦上弹完的旋律尽量留在一根弦上（慢的句子沿着弦走，快的句子才在把位里换弦）
     - 滑音 / 击弦 / 勾弦必须在同一根弦上（滑音本身就是换把，不额外扣分）
     - 分解和弦 / 让音延续：前一个音还在响时，下一个音不能在同一根弦上（会把它掐断）
-    - 高把位时尽量不用空弦（后摇模式除外：空弦延音很常见）；小指伸展、跨弦略扣分；同样顺手时低把位略优先"""
+    - 高把位时尽量不用空弦（后摇模式除外：空弦延音很常见）；小指伸展、跨弦略扣分；同样顺手时低把位略优先
+    one_string=True（一根弦模式）：旋律尽量整段在一根弦上，沿着弦滑来滑去；只有音超出这根弦的范围、
+    或者又快又远的大跳实在够不着时才换弦（换了就留在新弦上）。"""
     import itertools
 
     links, slides, overlaps = links or set(), slides or set(), overlaps or set()
@@ -660,6 +662,8 @@ def _tab_dp(groups, links=None, times=None, slides=None, tuning=ch.STANDARD_TUNI
 
     def own_cost(combo, pos):
         cost = 0.0
+        if one_string:
+            cost += sum(0.25 * (f - 14) for _, f in combo if f > 14)     # 太高的品不好按，换弦前先考虑低一点的弦
         for _, f in combo:
             if f == 0:
                 cost += 0.1 if ((pos or 0) <= 4 or open_ok) else 1.2
@@ -685,6 +689,21 @@ def _tab_dp(groups, links=None, times=None, slides=None, tuning=ch.STANDARD_TUNI
             for j, (pc, ppos) in enumerate(layers[i - 1]):
                 total = costs[j]
                 same_string = single and len(pc) == 1 and c[0][0] == pc[0][0]
+                if one_string and single and len(pc) == 1:
+                    if same_string:
+                        jump = abs(c[0][1] - pc[0][1])
+                        total += 0.12 * jump                               # 沿着弦挪：很便宜
+                        if ioi < 0.15 and jump > 5:
+                            total += 0.6 * (jump - 5)                      # 又快又远：够不着
+                    else:
+                        total += 6.0 + 1.0 * (abs(c[0][0] - pc[0][0]) - 1)  # 换弦：实在不行才换
+                        if linked:
+                            total += 50.0
+                    if ringing and same_string:
+                        total += 6.0                                       # 分解和弦还在响：还是分开弦
+                    if best is None or total < best:
+                        best, arg = total, j
+                    continue
                 if pos is not None and ppos is not None and pos != ppos:
                     shift = abs(pos - ppos)
                     if slide and same_string:
@@ -719,8 +738,8 @@ def _tab_dp(groups, links=None, times=None, slides=None, tuning=ch.STANDARD_TUNI
 
 def assign_tab(groups: list[list[int]], links: set | None = None, times: list[float] | None = None,
                slides: set | None = None, tuning=ch.STANDARD_TUNING, overlaps: set | None = None,
-               ends: list[float] | None = None, open_ok: bool = False) -> list[list[tuple[int, int]]]:
-    return _tab_dp(groups, links, times, slides, tuning, overlaps, ends, open_ok)[1]
+               ends: list[float] | None = None, open_ok: bool = False, one_string: bool = False) -> list[list[tuple[int, int]]]:
+    return _tab_dp(groups, links, times, slides, tuning, overlaps, ends, open_ok, one_string)[1]
 
 
 def tab_cost(groups, tuning, times) -> float:
@@ -1242,7 +1261,8 @@ AI 自动识别，初稿请对照原曲校对；每格一小节。</div>
 
 # ------------------------------------------------------------------ 主流程
 
-def build_part(notes: list[dict], beats_full, bar_start: int, tuning: list[int], open_ok: bool) -> tuple[list, list]:
+def build_part(notes: list[dict], beats_full, bar_start: int, tuning: list[int], open_ok: bool,
+               one_string: bool = False) -> tuple[list, list]:
     """一把吉他：对齐到拍子 → 按整首的指法排布选把位 → 核对技巧记号。返回 (events, 带弦和品的音)。"""
     grids = choose_grids(notes, beats_full, bar_start)
     groups = []
@@ -1271,7 +1291,7 @@ def build_part(notes: list[dict], beats_full, bar_start: int, tuning: list[int],
         return tech
     links = {i for i, g in enumerate(groups[:-1]) if group_tech(g).get("to_next")}
     slides = {i for i, g in enumerate(groups[:-1]) if group_tech(g).get("to_next") == "slide"}
-    tabs = assign_tab([g["pitches"] for g in groups], links, starts, slides, tuning, overlaps, real_end, open_ok)
+    tabs = assign_tab([g["pitches"] for g in groups], links, starts, slides, tuning, overlaps, real_end, open_ok, one_string)
     events, tab_notes = [], []
     for i, (g, frets) in enumerate(zip(groups, tabs)):
         tech = finalize_tech(group_tech(g), frets, tabs[i + 1] if i + 1 < len(tabs) else None,
@@ -1285,7 +1305,8 @@ def build_part(notes: list[dict], beats_full, bar_start: int, tuning: list[int],
 
 
 def run(path: str, out: str, models_dir: str, do_chords: bool, do_solo: bool, mono: bool,
-        size: str, beam: int, parallel: int, title: str, post_rock: bool = False, tuning_name: str = "自动") -> None:
+        size: str, beam: int, parallel: int, title: str, post_rock: bool = False, tuning_name: str = "自动",
+        one_string: bool = False) -> None:
     import numpy as np
     import soundfile as sf
     import torch
@@ -1390,7 +1411,8 @@ def run(path: str, out: str, models_dir: str, do_chords: bool, do_solo: bool, mo
         names = ["吉他 1（主奏）", "吉他 2"] if len(parts) > 1 else ["吉他"]
         built, tab_notes = [], []
         for k, part in enumerate(parts):
-            events, notes_k = build_part(part, beats_full, bar_start, tuning, open_ok=post_rock)
+            events, notes_k = build_part(part, beats_full, bar_start, tuning, open_ok=post_rock or one_string,
+                                         one_string=one_string and len(set(round(n["start"], 2) for n in part)) > len(part) * 0.7)
             for n in notes_k:
                 n["guitar"] = k
             tab_notes += notes_k
@@ -1540,6 +1562,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--overlap", type=int, default=None)
     parser.add_argument("--post-rock", action="store_true")
     parser.add_argument("--tuning", default="自动")
+    parser.add_argument("--one-string", action="store_true", help="一根弦模式：旋律尽量在一根弦上")
     args = parser.parse_args(argv)
     try:
         import concert_worker as cw
@@ -1548,7 +1571,7 @@ def main(argv: list[str] | None = None) -> int:
             live_chords(args.live, args.stop_file)
             return 0
         run(args.guitar, args.out, args.models, args.chords, args.solo, args.mono, args.size, args.beam, args.parallel,
-            args.title, args.post_rock, args.tuning)
+            args.title, args.post_rock, args.tuning, args.one_string)
         return 0
     except Exception as error:
         emit("error", message=str(error), detail=traceback.format_exc())
