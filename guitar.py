@@ -36,9 +36,12 @@ def _ensure_guitarpro(log) -> None:
         raise RuntimeError("Guitar Pro 文件组件安装失败，请检查网络后重试。")
 
 
+TUNING_CHOICES = ["自动", "标准 EADGBE", "降半音 Eb", "Drop D", "DADGAD", "Open D", "Drop C#"]
+
+
 def run(source: str, ffmpeg: str, output_dir: str, do_chords: bool, do_solo: bool, mono: bool, size_label: str,
         clean: bool, log=lambda _m: None, progress=lambda _f, _s="": None,
-        start: float | None = None, length: float | None = None) -> dict:
+        start: float | None = None, length: float | None = None, post_rock: bool = False, tuning: str = "自动") -> dict:
     if not concert.ai_available():
         raise RuntimeError("需要先在“设置”里安装演唱会降噪组件（吉他分离要用）。")
     if do_solo:
@@ -71,6 +74,8 @@ def run(source: str, ffmpeg: str, output_dir: str, do_chords: bool, do_solo: boo
     args += ["--chords"] if do_chords else []
     args += ["--solo"] if do_solo else []
     args += ["--mono"] if mono else []
+    args += ["--post-rock"] if post_rock else []
+    args += ["--tuning", tuning]
     args += concert._overlap_args()
     concert.run_worker(args, on_event, script=WORKER)
     result = json.loads((folder / "result.json").read_text(encoding="utf-8"))
@@ -111,7 +116,7 @@ def export(result: dict, ffmpeg: str, output_dir: str, title: str, start, log, p
             subprocess.run([musescore, "-o", pdf, str(target)], capture_output=True, creationflags=NO_WINDOW, timeout=600)
             if os.path.isfile(pdf):
                 saved.append(pdf)
-    for key, name in (("backing", "伴奏（去掉吉他）"), ("guitar", "只有吉他")):
+    for key, name in (("backing", "伴奏（去掉吉他）"), ("guitar", "只有吉他"), ("guitar1", "只有吉他1"), ("guitar2", "只有吉他2")):
         if files.get(key) and os.path.isfile(files[key]):
             target = out / f"{title}_{name}.flac"
             subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", files[key], "-c:a", "flac", str(target)],

@@ -298,6 +298,12 @@ AI 组件|AI components|KI-Komponenten
 第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
 录音组件|Recorder|Rekorder
 ● 有新版本|● Update available|● Update verfügbar
+后摇模式|Post-rock mode|Post-Rock-Modus
+调弦|Tuning|Stimmung
+自动|Auto|Automatisch
+看|Show|Zeigen
+全部|All|Alle
+例：2:15|e.g. 2:15|z. B. 2:15
 打开吉他谱（含指板图）|Open guitar sheet (with fretboards)|Gitarrenblatt öffnen (mit Griffbrettern)
 ● 边放边录（电脑声音）|● Record while playing (PC audio)|● Beim Abspielen aufnehmen (PC-Ton)
 ■ 停止并扒谱|■ Stop & transcribe|■ Stopp & transkribieren
@@ -417,6 +423,29 @@ AI 处理完成|AI finished|KI fertig
 识别到调性：|Key detected: |Erkannte Tonart: 
 （活动）| (activity)| (Aktivität)
 版本 |Version |Version
+录音音量很小（峰值 |Very quiet recording (peak |Sehr leise Aufnahme (Spitze 
+ dB），已先放大到正常音量再识别。| dB) – boosted to a normal level before analysis.| dB) – vor der Analyse auf normalen Pegel angehoben.
+后摇模式：把安静段落的音量拉平|Post-rock: levelling quiet passages|Post-Rock: leise Passagen angleichen
+后摇模式：去掉延音回声、识别震音、分开两把吉他|Post-rock: removing delay echoes, tremolo picking, splitting two guitars|Post-Rock: Delay-Echos entfernen, Tremolo erkennen, zwei Gitarren trennen
+从“其他”声部里找吉他|Looking for guitar in the “other” stem|Gitarre in der „Rest“-Spur suchen
+检测到延音效果（约 |Delay effect detected (about |Delay erkannt (ca. 
+ ms），已去掉回声音符。| ms) – echo notes removed.| ms) – Echo-Töne entfernt.
+在“其他”声部里又找到 |Found |In der „Rest“-Spur 
+ 个吉他音（混响很重的那把吉他常被分到这里）。| more guitar notes in the “other” stem (heavily reverbed guitars often land there).| weitere Gitarrentöne gefunden (stark verhallte Gitarren landen oft dort).
+建议调弦：|Suggested tuning: |Empfohlene Stimmung: 
+（按这个调弦排的指法）| (the tab uses this tuning)| (die Tabulatur nutzt diese Stimmung)
+两把吉他（|Two guitars (|Zwei Gitarren (
+按左右声道分开|split by left/right|nach links/rechts getrennt
+按音色分开|split by tone|nach Klang getrennt
+按声部分开（高的旋律为吉他 1）|split by part (higher melody = guitar 1)|nach Stimmen getrennt (höhere Melodie = Gitarre 1)
+按声部分开（混响很重的那把单独一把）|split by part (the heavily reverbed one separately)|nach Stimmen getrennt (die stark verhallte separat)
+）：|): |): 
+建议调弦 |suggested tuning |empfohlene Stimmung 
+吉他 1（主奏）|Guitar 1 (lead)|Gitarre 1 (Lead)
+吉他 2|Guitar 2|Gitarre 2
+只有吉他 1|Guitar 1 only|Nur Gitarre 1
+只有吉他 2|Guitar 2 only|Nur Gitarre 2
+橙=吉他1 绿=吉他2|orange = guitar 1, green = guitar 2|orange = Gitarre 1, grün = Gitarre 2
 识别滑音、推弦、击勾弦|Detecting slides, bends, hammer-ons/pull-offs|Slides, Bendings, Hammer-ons/Pull-offs erkennen
 击弦 h|hammer-on h|Hammer-on h
 勾弦 p|pull-off p|Pull-off p

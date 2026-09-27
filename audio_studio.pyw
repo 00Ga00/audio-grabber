@@ -1866,12 +1866,18 @@ def main() -> None:
     g2_size_box.pack(side="left")
     g2_range = ttk.Frame(g2_card, style="Card.TFrame")
     g2_range.grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
-    ttk.Checkbutton(g2_range, text="只扒一段", variable=g2_clip).pack(side="left")
+    g2_post = tk.BooleanVar(value=bool(prefs.get("post_rock", False)))
+    ttk.Checkbutton(g2_range, text="后摇模式", variable=g2_post,
+                    command=lambda: (prefs.update(post_rock=bool(g2_post.get())), concert.save_presets(presets))).pack(side="left")
+    ttk.Label(g2_range, text="调弦", style="Card.TLabel").pack(side="left", padx=(10, 4))
+    g2_tuning = tk.StringVar(value="自动")
+    ttk.Combobox(g2_range, textvariable=g2_tuning, values=guitar.TUNING_CHOICES, state="readonly", width=12).pack(side="left")
+    ttk.Checkbutton(g2_range, text="只扒一段", variable=g2_clip).pack(side="left", padx=(14, 0))
     ttk.Label(g2_range, text="从", style="Card.TLabel").pack(side="left", padx=(10, 4))
     ttk.Entry(g2_range, textvariable=g2_from, width=9).pack(side="left")
     ttk.Label(g2_range, text="到", style="Card.TLabel").pack(side="left", padx=(8, 4))
     ttk.Entry(g2_range, textvariable=g2_to, width=9).pack(side="left")
-    ttk.Label(g2_range, text="例：2:15；扒 Solo 时只选 Solo 那一段，快很多", style="Muted.Card.TLabel").pack(side="left", padx=(10, 0))
+    ttk.Label(g2_range, text="例：2:15", style="Muted.Card.TLabel").pack(side="left", padx=(8, 0))
     for var in (g2_from, g2_to):
         var.trace_add("write", lambda *_: g2_clip.set(bool(g2_from.get().strip() or g2_to.get().strip())))
     g2_actions = ttk.Frame(g2_card, style="Card.TFrame")
@@ -1913,7 +1919,14 @@ def main() -> None:
     ttk.Label(g2_play_row, text="听", style="Card.TLabel").pack(side="left", padx=(12, 4))
     g2_tracks = {"原曲": "mix", "伴奏（去掉吉他）": "backing", "只有吉他": "guitar"}
     g2_track = tk.StringVar(value="原曲")
-    ttk.Combobox(g2_play_row, textvariable=g2_track, values=list(g2_tracks), state="readonly", width=16).pack(side="left")
+    g2_track_box = ttk.Combobox(g2_play_row, textvariable=g2_track, values=list(g2_tracks), state="readonly", width=16)
+    g2_track_box.pack(side="left")
+    ttk.Label(g2_play_row, text="看", style="Card.TLabel").pack(side="left", padx=(12, 4))
+    g2_view_guitar = tk.StringVar(value="全部")
+    g2_view_box = ttk.Combobox(g2_play_row, textvariable=g2_view_guitar, values=["全部"], state="readonly", width=12)
+    g2_view_box.pack(side="left")
+    g2_view_guitar.trace_add("write", lambda *_: draw_g2_board())
+    G2_COLORS = ["#d9480f", "#2f9e44"]      # 吉他 1 橙色、吉他 2 绿色
     g2_loop = tk.BooleanVar(value=True)
     ttk.Checkbutton(g2_play_row, text="循环", variable=g2_loop).pack(side="left", padx=(12, 0))
     g2_time = ttk.Label(g2_play_row, text="", style="Muted.Card.TLabel")
@@ -2067,17 +2080,25 @@ def main() -> None:
                         dot(s_, 0, "", "#d9480f", label=False)
             g2_time.configure(text=f"实时和弦：{name if name != 'N' else '–'}")
             return
+        guitars = (result or {}).get("guitars") or []
+        if notes and g2_view_guitar.get() in guitars:
+            wanted = guitars.index(g2_view_guitar.get())
+            notes = [n for n in notes if n.get("guitar", 0) == wanted]
         if notes:
             now = [n for n in notes if n["start"] <= t < max(n["end"], n["start"] + 0.12)]
-            later = [n for n in notes if n["start"] > t]
-            upcoming = [n for n in later if n["start"] - (later[0]["start"] if later else 0) < 0.02][:6]
+            upcoming = []
+            for k in sorted({n.get("guitar", 0) for n in notes}):
+                later = [n for n in notes if n["start"] > t and n.get("guitar", 0) == k]
+                upcoming += [n for n in later if n["start"] - (later[0]["start"] if later else 0) < 0.02][:6]
             for n in upcoming:
-                dot(n["string"], n["fret"], "", "#4c8dff")
+                dot(n["string"], n["fret"], "", G2_COLORS[n.get("guitar", 0) % 2] if len(guitars) > 1 else "#4c8dff")
             for n in now:
                 tech = n.get("tech") or {}
                 how = tech.get("to_next")
                 if how and upcoming:
                     nx = upcoming[0]
+                    same = [u for u in upcoming if u.get("guitar", 0) == n.get("guitar", 0)]
+                    nx = same[0] if same else nx
                     if how == "slide":        # 滑音：粗线滑到下一个位置
                         c.create_line(fx(n["fret"]), sy(n["string"]), fx(nx["fret"]), sy(nx["string"]), fill="#d9480f", width=4,
                                       arrow="last", arrowshape=(10, 12, 5))
@@ -2086,7 +2107,8 @@ def main() -> None:
                     label = {"slide": "滑", "hammer": "击弦 h", "pull": "勾弦 p"}[how]
                     c.create_text((fx(n["fret"]) + fx(nx["fret"])) / 2, sy(n["string"]) - 14, text=label,
                                   font=("Microsoft YaHei UI", 8, "bold"), fill="#d9480f" if how == "slide" else "#5b6678")
-                dot(n["string"], n["fret"], "#d9480f", "#d9480f")
+                color = G2_COLORS[n.get("guitar", 0) % 2]
+                dot(n["string"], n["fret"], color, color)
                 extra = ""
                 if tech.get("bend"):
                     extra = f"推弦 ↑{tech['bend']}" + (" 再放回" if tech.get("release") else "")
@@ -2111,7 +2133,11 @@ def main() -> None:
                     c.create_rectangle(x - 3, top - 4, x + 3, bottom + 4, fill="#5b6678", outline="")
                 chord_text = f" · 当前和弦：{played}" + (f"（变调夹 {capo} 品）" if capo else "")
         mm, ss = divmod(int(t + (result.get("offset") or 0)), 60)
-        g2_time.configure(text=f"{mm}:{ss:02d}" + chord_text)
+        tuning_text = ""
+        if result.get("tuning") and not result["tuning"]["name"].startswith("标准"):
+            tuning_text = f" · {result['tuning']['name']}"
+        legend = " · 橙=吉他1 绿=吉他2" if len(guitars) > 1 and g2_view_guitar.get() == "全部" else ""
+        g2_time.configure(text=f"{mm}:{ss:02d}" + chord_text + tuning_text + legend)
 
     g2_chord_canvas.bind("<Configure>", draw_g2_chords)
     g2_board.bind("<Configure>", draw_g2_board)
@@ -2260,6 +2286,7 @@ def main() -> None:
         g2_progress.configure(value=0)
         g2_status.set("正在扒谱……" + (f"（预计{estimate_text(keys, seconds)}）" if estimate_text(keys, seconds) else ""))
         options = (g2_chords.get(), g2_solo.get(), g2_mono.get(), g2_size.get(), g2_clean.get())
+        post_rock, tuning_choice = bool(g2_post.get()), g2_tuning.get()
         output_dir = g2_output_dir.get().strip() or os.path.dirname(source)
 
         def worker():
@@ -2268,7 +2295,7 @@ def main() -> None:
                 result = guitar.run(source, ffmpeg, output_dir, *options,
                                     log=lambda t: events.put(("guitar_log", t)),
                                     progress=lambda f, s="": events.put(("guitar_progress", (f, s))),
-                                    start=clip_start, length=clip_length)
+                                    start=clip_start, length=clip_length, post_rock=post_rock, tuning=tuning_choice)
                 learn_speed(keys, seconds, time.time() - began)
                 events.put(("guitar_done", result))
             except concert.Cancelled:
@@ -2328,13 +2355,28 @@ def main() -> None:
             g2_sheet_button.configure(state="normal" if value["sheet"] else "disabled")
             g2_play_button.configure(state="normal")
             g2_restart_button.configure(state="normal")
+            g2_view_box.configure(values=["全部"] + list(value.get("guitars") or []))
+            g2_view_guitar.set("全部")
+            g2_tracks.clear()
+            g2_tracks.update({"原曲": "mix", "伴奏（去掉吉他）": "backing", "只有吉他": "guitar"})
+            for k in (1, 2):
+                if value.get("files", {}).get(f"guitar{k}"):
+                    g2_tracks[f"只有吉他 {k}"] = f"guitar{k}"
+            g2_track_box.configure(values=list(g2_tracks))
             parts = []
             if value.get("chords"):
                 info = value["chords"]
                 parts.append(f"{len({s_['name'] for s_ in info['segments'] if s_['name'] != 'N'})} 个和弦" +
                              (f"，建议变调夹第 {info['capo']} 品" if info["capo"] else ""))
             if value.get("notes") is not None:
-                parts.append(f"Solo {len(value['notes'])} 个音")
+                guitars = value.get("guitars") or []
+                if len(guitars) > 1:
+                    counts = [sum(1 for n in value["notes"] if n.get("guitar", 0) == k) for k in range(len(guitars))]
+                    parts.append(f"两把吉他（{value.get('split_method', '')}）：{counts[0]} + {counts[1]} 个音")
+                else:
+                    parts.append(f"Solo {len(value['notes'])} 个音")
+                if value.get("tuning") and not value["tuning"]["name"].startswith("标准"):
+                    parts.append(f"建议调弦 {value['tuning']['name']}")
             g2_status.set("完成：" + "，".join(parts) + "。点“播放”在指板上跟着练；文件已存到输出文件夹")
             draw_g2_chords()
             draw_g2_board()
