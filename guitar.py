@@ -90,9 +90,12 @@ def export(result: dict, ffmpeg: str, output_dir: str, title: str, start, log, p
     files = result["files"]
     saved = []
     if files.get("sheet_html"):
-        target = out / f"{title}_吉他谱.html"          # 和弦按法图 + 和弦进行 + Solo 六线谱，浏览器打开、可打印
+        target = out / f"{title}_吉他谱.html"          # 和弦按法图 + 和弦进行 + Solo 六线谱 + 指板图，浏览器打开、可打印
         shutil.copyfile(files["sheet_html"], target)
         saved.append(str(target))
+        pdf = html_to_pdf(str(target), str(target.with_suffix(".pdf")))
+        if pdf:
+            saved.insert(0, pdf)
     if files.get("gp5"):
         target = out / f"{title}_六线谱.gp5"            # Guitar Pro / TuxGuitar / MuseScore 都能打开
         shutil.copyfile(files["gp5"], target)
@@ -117,6 +120,28 @@ def export(result: dict, ffmpeg: str, output_dir: str, title: str, start, log, p
                 saved.append(str(target))
     log(f"已保存到：{out}")
     return saved
+
+
+def find_edge() -> str | None:
+    """Windows 自带的 Edge 浏览器（用来把吉他谱存成 PDF）。"""
+    for base in (os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), os.environ.get("ProgramFiles", r"C:\Program Files")):
+        path = os.path.join(base, "Microsoft", "Edge", "Application", "msedge.exe")
+        if os.path.isfile(path):
+            return path
+    return shutil.which("msedge") or shutil.which("chromium") or shutil.which("google-chrome")
+
+
+def html_to_pdf(html: str, pdf: str) -> str | None:
+    """用 Edge 的无界面模式把 HTML 打印成 PDF（整份吉他谱：按法图、和弦进行、六线谱、指板图）。"""
+    browser = find_edge()
+    if not browser:
+        return None
+    try:
+        subprocess.run([browser, "--headless", "--disable-gpu", "--no-pdf-header-footer", f"--print-to-pdf={pdf}",
+                        Path(html).resolve().as_uri()], capture_output=True, creationflags=NO_WINDOW, timeout=90)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return pdf if os.path.isfile(pdf) and os.path.getsize(pdf) > 1000 else None
 
 
 def practice_audio(result: dict, track: str, speed: float, ffmpeg: str) -> str:

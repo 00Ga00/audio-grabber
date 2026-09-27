@@ -217,12 +217,14 @@ def recognize_chords(tracks: dict, beats_full, bar_start: int, per_bar: int, dur
     minor = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
     best_key = max(((np.corrcoef(total, np.roll(p, k))[0, 1], k, is_minor) for is_minor, p in ((False, major), (True, minor))
                     for k in range(12)))
-    flats = best_key[1] in (1, 3, 5, 8, 10) or (best_key[2] and best_key[1] in (0, 2, 7))
-    if flats:
+    tonic, is_minor = best_key[1], best_key[2]
+    flats = tonic in (1, 3, 5, 8, 10) if not is_minor else tonic in (0, 2, 5, 7, 10)
+    sharps = tonic in (2, 4, 6, 7, 9, 11) if not is_minor else tonic in (1, 3, 4, 6, 8, 11)
+    if flats or sharps:          # 按调号写升降号：E 大调写 G#m 而不是 Abm
         for seg in segments:
             if seg["name"] != "N":
                 r, q, b = ch.split_name(seg["name"])
-                seg["name"] = ch.make_name(r, q, b, flats=True)
+                seg["name"] = ch.make_name(r, q, b, flats=flats, sharps=sharps)
 
     # 按小节排：每小节最多两个和弦
     beat_times = beats_full
@@ -246,7 +248,7 @@ def recognize_chords(tracks: dict, beats_full, bar_start: int, per_bar: int, dur
     for seg in segments:
         counts[seg["name"]] = counts.get(seg["name"], 0) + seg["beats"]
     capo = ch.suggest_capo(counts)
-    return {"segments": segments, "bars": bars, "key": ch.key_name(best_key[1], best_key[2]),
+    return {"segments": segments, "bars": bars, "key": ch.key_name(best_key[1], best_key[2], sharps=sharps, flats=flats),
             "tuning_cents": round(tuning * 100), "capo": capo["capo"], "capo_shapes": capo["shapes"], "counts": counts}
 
 
@@ -297,6 +299,109 @@ def skyline(notes: list[dict]) -> list[dict]:
     return [n for n in kept if n["end"] - n["start"] > 0.02]
 
 
+# ------------------------------------------------------------------ 演奏技巧：滑音、击弦/勾弦、推弦、揉弦
+
+def detect_techniques(guitar_path: str, notes: list[dict]) -> list[dict]:
+    """用音高曲线（pYIN）和起音强度判断相邻两个音之间是怎么过去的：
+    - 滑音：音高连续地滑过中间的音（相差 2 个半音以上）
+    - 推弦：向上 1–2 个半音、连续地推上去（高音弦上）；推上去又回来 = 推弦回放
+    - 击弦 / 勾弦（h / p）：没有新的拨弦（起音很弱），音高直接跳过去
+    - 揉弦（~）：长音上的音高有规律地来回摆动
+    每个音加上 tech = {"to_next": "slide"/"hammer"/"pull"/None, "bend": 半音数, "release": 是否放回, "vibrato": bool}。
+    推弦的目标音会并进前一个音（同一个品位，推上去）。"""
+    import librosa
+    import numpy as np
+
+    for n in notes:
+        n["tech"] = {"to_next": None, "bend": 0, "release": False, "vibrato": False}
+    if len(notes) < 2:
+        return notes
+    sr, hop = 22050, 256
+    y, _ = librosa.load(guitar_path, sr=sr, mono=True)
+    f0, voiced, _prob = librosa.pyin(y, fmin=75, fmax=1400, sr=sr, frame_length=2048, hop_length=hop)
+    midi = np.where(voiced, librosa.hz_to_midi(np.nan_to_num(f0, nan=1.0)), np.nan)
+    times = librosa.times_like(f0, sr=sr, hop_length=hop)
+    onset = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+
+    def frames(a, b):
+        i, j = np.searchsorted(times, a), np.searchsorted(times, b)
+        return slice(max(0, i), max(i + 1, j))
+
+    attack = [float(onset[frames(n["start"] - 0.03, n["start"] + 0.05)].max()) for n in notes]
+    typical = float(np.median(attack)) or 1.0
+
+    # 揉弦
+    for n in notes:
+        if n["end"] - n["start"] >= 0.3:
+            seg = midi[frames(n["start"] + 0.05, n["end"] - 0.03)]
+            seg = seg[~np.isnan(seg)]
+            if len(seg) > 12:
+                k = max(3, int(0.12 * sr / hop))
+                trend = np.convolve(seg, np.ones(k) / k, mode="same")
+                wobble = (seg - trend)[k:-k] if len(seg) > 2 * k + 4 else seg - trend
+                crossings = np.sum(np.diff(np.sign(wobble)) != 0) / 2 / max((len(wobble) * hop / sr), 1e-3)
+                if np.std(wobble) > 0.12 and 3 <= crossings <= 9:
+                    n["tech"]["vibrato"] = True
+
+    kept, i = [], 0
+    while i < len(notes):
+        a = notes[i]
+        kept.append(a)
+        if i + 1 >= len(notes):
+            break
+        b = notes[i + 1]
+        gap = b["start"] - a["end"]
+        interval = b["pitch"] - a["pitch"]
+        if gap > 0.08 or interval == 0 or abs(interval) > 7:
+            i += 1
+            continue
+        soft = attack[i + 1] < 0.55 * typical
+        seg = midi[frames(b["start"] - 0.18, b["start"] + 0.08)]
+        seg = seg[~np.isnan(seg)]
+        low, high = min(a["pitch"], b["pitch"]), max(a["pitch"], b["pitch"])
+        between = int(np.sum((seg > low + 0.3) & (seg < high - 0.3)))
+        glide = between >= (2 if abs(interval) >= 2 else 3)
+        if glide and 0 < interval <= 2 and a["pitch"] >= 55 and soft:
+            # 推弦：并进前一个音；如果后面马上回到原来的音（也没有新拨弦），就是推弦回放
+            a["tech"]["bend"] = interval
+            a["end"] = b["end"]
+            a["tech"]["vibrato"] = a["tech"]["vibrato"] or b["tech"]["vibrato"]
+            if i + 2 < len(notes) and notes[i + 2]["pitch"] == a["pitch"] and attack[i + 2] < 0.55 * typical \
+                    and notes[i + 2]["start"] - b["end"] < 0.08:
+                a["tech"]["release"] = True
+                a["end"] = notes[i + 2]["end"]
+                i += 3
+            else:
+                i += 2
+            continue
+        if glide:
+            a["tech"]["to_next"] = "slide"
+        elif soft:
+            a["tech"]["to_next"] = "hammer" if interval > 0 else "pull"
+        i += 1
+    return kept
+
+
+def finalize_tech(tech: dict, frets: list, next_frets: list | None, gap_units: int) -> dict:
+    """排好把位后再核对一遍技巧记号：必须同一根弦、品位不同；空弦没法滑（改成击弦 / 勾弦）；
+    击弦 / 勾弦按品位高低定方向；中间停顿太久的不算连奏。"""
+    tech = dict(tech or {})
+    how = tech.get("to_next")
+    if not how:
+        return tech
+    if not next_frets or len(frets) != 1 or len(next_frets) != 1 or next_frets[0][0] != frets[0][0]:
+        tech["to_next"] = None
+        return tech
+    f1, f2 = frets[0][1], next_frets[0][1]
+    if f1 == f2 or (how in ("hammer", "pull") and gap_units > 3):
+        tech["to_next"] = None
+    elif how == "slide" and (f1 == 0 or f2 == 0):
+        tech["to_next"] = "hammer" if f2 > f1 else "pull"
+    elif how in ("hammer", "pull"):
+        tech["to_next"] = "hammer" if f2 > f1 else "pull"
+    return tech
+
+
 # ------------------------------------------------------------------ 六线谱把位
 
 def positions(pitch: int, tuning=ch.STANDARD_TUNING) -> list[tuple[int, int]]:
@@ -304,54 +409,81 @@ def positions(pitch: int, tuning=ch.STANDARD_TUNING) -> list[tuple[int, int]]:
     return [(s, pitch - open_) for s, open_ in enumerate(tuning) if 0 <= pitch - open_ <= MAX_FRET]
 
 
-def assign_tab(groups: list[list[int]]) -> list[list[tuple[int, int]]]:
-    """动态规划选最顺手的把位：手的位置移动最少、同一组音在 4 品以内、低把位和空弦略优先。
-    groups：按时间顺序的“同时弹的音”列表。"""
+def assign_tab(groups: list[list[int]], links: set | None = None, times: list[float] | None = None,
+               slides: set | None = None) -> list[list[tuple[int, int]]]:
+    """按“弹起来顺不顺手”选把位（动态规划）。考虑左手的把位（食指在第几品，四个手指管 4 个品）：
+    - 同一把位里能按到的尽量不换把；换把有代价，越远越贵，快速的句子里更贵
+    - 滑音 / 击弦 / 勾弦必须在同一根弦上（滑音本身就是换把，不额外扣分）
+    - 高把位时尽量不用空弦；跨弦、小指伸展略扣分；同样顺手时低把位略优先
+    groups：按时间顺序的“同时弹的音”；links：第 i 组和第 i+1 组要在同一根弦上；times：每组的开始时间；
+    slides：其中是滑音的 i。"""
     import itertools
+
+    links, slides = links or set(), slides or set()
 
     def options(group):
         per = [positions(p) for p in group]
         out = []
         for combo in itertools.product(*per):
-            strings = [s for s, _ in combo]
+            strings = [s_ for s_, _ in combo]
             if len(set(strings)) != len(strings):
                 continue
             fretted = [f for _, f in combo if f > 0]
-            span = (max(fretted) - min(fretted)) if fretted else 0
-            if span > 4:
+            if fretted and max(fretted) - min(fretted) > 4:
                 continue
             out.append(combo)
         if not out:   # 按不出来：去掉最低的音再试
             return options(sorted(group)[1:]) if len(group) > 1 else [((0, 0),)]
-        return out[:200]
+        return out[:120]
 
-    def hand(combo):
+    def hand_positions(combo):
+        """这个按法可以在哪些把位（食指所在的品）上按到。"""
         fretted = [f for _, f in combo if f > 0]
-        return sum(fretted) / len(fretted) if fretted else None
+        if not fretted:
+            return list(range(1, 18))          # 全是空弦：手可以停在任何把位（记住手在哪，免得“借空弦换把”）
+        lo, hi = min(fretted), max(fretted)
+        return [p_ for p_ in range(max(1, hi - 3), lo + 2) if p_ - 1 <= lo and hi <= p_ + 3]
 
-    def own_cost(combo):
-        fretted = [f for _, f in combo if f > 0]
-        cost = 0.03 * sum(fretted) / max(len(combo), 1)          # 低把位略优先
-        cost += 0.2 * ((max(fretted) - min(fretted)) if fretted else 0)
-        return cost
+    def own_cost(combo, pos):
+        cost = 0.0
+        for _, f in combo:
+            if f == 0:
+                cost += 0.1 if (pos or 0) <= 4 else 1.2      # 高把位用空弦很别扭
+            elif pos is not None and (f == pos - 1 or f == pos + 3):
+                cost += 0.25                                  # 需要伸展
+        return cost + 0.03 * (pos or 0)
 
-    layers = [options(g) for g in groups]
+    layers = []
+    for g in groups:
+        states = [(c, pos) for c in options(g) for pos in hand_positions(c)]
+        layers.append(states)
     if not layers:
         return []
-    costs = [own_cost(c) for c in layers[0]]
+    costs = [own_cost(c, pos) for c, pos in layers[0]]
     backs = []
     for i in range(1, len(layers)):
+        fast = times is not None and i < len(times) and times[i] - times[i - 1] < 0.18
+        linked, slide = (i - 1) in links, (i - 1) in slides
         new_costs, back = [], []
-        for c in layers[i]:
-            h = hand(c)
+        for c, pos in layers[i]:
             best, arg = None, 0
-            for j, p in enumerate(layers[i - 1]):
-                hp = hand(p)
-                move = abs(h - hp) if (h is not None and hp is not None) else 0.5
-                total = costs[j] + move + (0.8 if move > 4 else 0)
+            for j, (pc, ppos) in enumerate(layers[i - 1]):
+                total = costs[j]
+                if pos is not None and ppos is not None and pos != ppos:
+                    shift = abs(pos - ppos)
+                    if slide and len(c) == 1 and len(pc) == 1 and c[0][0] == pc[0][0]:
+                        total += 0.1 * shift                  # 滑音：手顺着弦滑过去
+                    else:
+                        total += (1.0 + 0.35 * shift) * (2.0 if fast else 1.0)
+                if len(c) == 1 and len(pc) == 1:
+                    skip = abs(c[0][0] - pc[0][0])
+                    if skip >= 2:
+                        total += 0.25 * (skip - 1)
+                    if linked and c[0][0] != pc[0][0]:
+                        total += 50.0                         # 滑音、击勾弦不能换弦
                 if best is None or total < best:
                     best, arg = total, j
-            new_costs.append(best + own_cost(c))
+            new_costs.append(best + own_cost(c, pos))
             back.append(arg)
         costs = new_costs
         backs.append(back)
@@ -361,7 +493,7 @@ def assign_tab(groups: list[list[int]]) -> list[list[tuple[int, int]]]:
         k = back[k]
         chosen.append(k)
     chosen.reverse()
-    return [list(layers[i][k]) for i, k in enumerate(chosen)]
+    return [list(layers[i][k][0]) for i, k in enumerate(chosen)]
 
 
 # ------------------------------------------------------------------ 对齐到节拍、写 Guitar Pro
@@ -436,20 +568,13 @@ def write_gp5(path: str, title: str, tempo: float, per_bar: int, events: list[di
     for header in song.measureHeaders:
         header.timeSignature = m.TimeSignature(numerator=per_bar, denominator=m.Duration(value=4))
 
-    timeline = []            # (起点, 长度, frets 或 None=休止, 是否延音)
-    cursor = 0
-    for e in sorted(events, key=lambda x: x["at"]):
-        if e["at"] > cursor:
-            timeline.append((cursor, e["at"] - cursor, None))
-        timeline.append((e["at"], e["len"], e["frets"]))
-        cursor = e["at"] + e["len"]
-    if cursor < n_bars * bar_units:
-        timeline.append((cursor, n_bars * bar_units - cursor, None))
-
+    timeline, _ = _timeline(events, bar_units)
     marks = sorted(chord_marks.items())
-    for at, length, frets in timeline:
+    for at, length, frets, tech in timeline:
         position, first = at, True
-        for piece in split_units(at, length, bar_units):
+        pieces = split_units(at, length, bar_units)
+        for k, piece in enumerate(pieces):
+            last = k == len(pieces) - 1
             bar = position // bar_units
             voice = track.measures[bar].voices[0]
             value, dotted, triplet = _DURATIONS[piece]
@@ -463,8 +588,22 @@ def write_gp5(path: str, title: str, tempo: float, per_bar: int, events: list[di
                 beat.text = label
             if frets:
                 for string, fret in frets:
-                    beat.notes.append(m.Note(beat, value=fret, string=6 - string,
-                                             type=m.NoteType.normal if first else m.NoteType.tie))
+                    note = m.Note(beat, value=fret, string=6 - string, type=m.NoteType.normal if first else m.NoteType.tie)
+                    if tech and len(frets) == 1:
+                        effect = note.effect
+                        if first and tech.get("bend"):
+                            semis = tech["bend"]
+                            points = ([m.BendPoint(0, 0), m.BendPoint(4, semis), m.BendPoint(8, semis), m.BendPoint(12, 0)]
+                                      if tech.get("release") else [m.BendPoint(0, 0), m.BendPoint(6, semis), m.BendPoint(12, semis)])
+                            effect.bend = m.BendEffect(type=m.BendType.bendRelease if tech.get("release") else m.BendType.bend,
+                                                       value=semis * 50, points=points)
+                        if last and tech.get("to_next") == "slide":
+                            effect.slides = [m.SlideType.legatoSlideTo]
+                        if last and tech.get("to_next") in ("hammer", "pull"):
+                            effect.hammer = True
+                        if tech.get("vibrato"):
+                            effect.vibrato = True
+                    beat.notes.append(note)
             voice.beats.append(beat)
             position += piece
             first = False
@@ -480,11 +619,11 @@ def _timeline(events: list[dict], bar_units: int) -> tuple[list, int]:
     timeline, cursor = [], 0
     for e in sorted(events, key=lambda x: x["at"]):
         if e["at"] > cursor:
-            timeline.append((cursor, e["at"] - cursor, None))
-        timeline.append((e["at"], e["len"], e["frets"]))
+            timeline.append((cursor, e["at"] - cursor, None, None))
+        timeline.append((e["at"], e["len"], e["frets"], e.get("tech")))
         cursor = e["at"] + e["len"]
     if cursor < n_bars * bar_units:
-        timeline.append((cursor, n_bars * bar_units - cursor, None))
+        timeline.append((cursor, n_bars * bar_units - cursor, None, None))
     return timeline, n_bars
 
 
@@ -503,15 +642,22 @@ def write_musicxml(path: str, title: str, tempo: float, per_bar: int, events: li
     names = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"] if flats else ch.NOTE_NAMES
     marks = sorted(chord_marks.items())
     bars = [[] for _ in range(n_bars)]      # 每小节：[(harmony, 时值, notes, 是否延音开始/结束)]
-    for at, length, frets in timeline:
+    prev_tech = None
+    for at, length, frets, tech in timeline:
         position = at
         pieces = split_units(at, length, bar_units)
         for i, piece in enumerate(pieces):
             label = None
             while marks and marks[0][0] <= position:
                 label = marks.pop(0)[1]
-            bars[position // bar_units].append((label, piece, frets, i > 0, i < len(pieces) - 1))
+            info = {"first": i == 0, "last": i == len(pieces) - 1, "tech": tech if frets else None,
+                    "from": prev_tech.get("to_next") if (i == 0 and frets and prev_tech) else None}
+            bars[position // bar_units].append((label, piece, frets, i > 0, i < len(pieces) - 1, info))
             position += piece
+        if frets:
+            prev_tech = tech or {}
+        elif length > 3:
+            prev_tech = None
 
     def pitch_xml(midi):
         name = names[midi % 12]
@@ -533,7 +679,7 @@ def write_musicxml(path: str, title: str, tempo: float, per_bar: int, events: li
             xml += f"<bass><bass-step>{b}</bass-step>" + (f"<bass-alter>{ba}</bass-alter>" if ba else "") + "</bass>"
         return xml + "</harmony>"
 
-    def notes_xml(piece, frets, tie_stop, tie_start, staff):
+    def notes_xml(piece, frets, tie_stop, tie_start, staff, info=None):
         value, dotted, triplet = _DURATIONS[piece]
         common = (f"<duration>{piece}</duration>" + ("<tie type=\"stop\"/>" if tie_stop else "") +
                   ("<tie type=\"start\"/>" if tie_start else "") + f"<voice>{staff}</voice><type>{_TYPES[value]}</type>" +
@@ -547,9 +693,27 @@ def write_musicxml(path: str, title: str, tempo: float, per_bar: int, events: li
             midi = ch.STANDARD_TUNING[string] + fret
             notations = ""
             ties = ("<tied type=\"stop\"/>" if tie_stop else "") + ("<tied type=\"start\"/>" if tie_start else "")
-            technical = f"<technical><string>{6 - string}</string><fret>{fret}</fret></technical>" if staff == 2 else ""
-            if ties or technical:
-                notations = f"<notations>{ties}{technical}</notations>"
+            tech, extra, marks_ = (info or {}).get("tech") or {}, "", ""
+            if len(frets) == 1 and info:
+                came = info.get("from")
+                if came == "slide":
+                    marks_ += '<slide type="stop" number="1"/>'
+                if came in ("hammer", "pull"):
+                    extra += f'<{"hammer-on" if came == "hammer" else "pull-off"} type="stop" number="1"/>'
+                if info.get("last") and tech.get("to_next") == "slide":
+                    marks_ += '<slide type="start" number="1" line-type="solid"/>'
+                if info.get("last") and tech.get("to_next") in ("hammer", "pull"):
+                    kind = "hammer-on" if tech["to_next"] == "hammer" else "pull-off"
+                    extra += f'<{kind} type="start" number="1">{"H" if kind == "hammer-on" else "P"}</{kind}>'
+                if info.get("first") and tech.get("bend"):
+                    extra += f'<bend><bend-alter>{tech["bend"]}</bend-alter></bend>'
+                    if tech.get("release"):
+                        extra += f'<bend><bend-alter>{-tech["bend"]}</bend-alter><release/></bend>'
+            technical = (f"<technical><string>{6 - string}</string><fret>{fret}</fret>{extra}</technical>" if staff == 2
+                         else (f"<technical>{extra}</technical>" if extra else ""))
+            ornaments = "<ornaments><wavy-line type=\"start\"/><wavy-line type=\"stop\"/></ornaments>" if (tech.get("vibrato") and staff == 1 and info and info.get("first")) else ""
+            if ties or technical or marks_ or ornaments:
+                notations = f"<notations>{ties}{marks_}{ornaments}{technical}</notations>"
             out.append(f"<note>{'<chord/>' if k else ''}{pitch_xml(midi)}{common}{notations}</note>")
         return "".join(out)
 
@@ -566,13 +730,13 @@ def write_musicxml(path: str, title: str, tempo: float, per_bar: int, events: li
                        f"<staff-details number=\"2\"><staff-lines>6</staff-lines>{tuning}</staff-details></attributes>")
             xml.append(f'<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit>'
                        f'<per-minute>{int(round(tempo))}</per-minute></metronome></direction-type><sound tempo="{int(round(tempo))}"/></direction>')
-        for label, piece, frets, tie_stop, tie_start in content:
+        for label, piece, frets, tie_stop, tie_start, info in content:
             if label:
                 xml.append(harmony_xml(label))
-            xml.append(notes_xml(piece, frets, tie_stop, tie_start, 1))
+            xml.append(notes_xml(piece, frets, tie_stop, tie_start, 1, info))
         xml.append(f"<backup><duration>{bar_units}</duration></backup>")
-        for label, piece, frets, tie_stop, tie_start in content:
-            xml.append(notes_xml(piece, frets, tie_stop, tie_start, 2))
+        for label, piece, frets, tie_stop, tie_start, info in content:
+            xml.append(notes_xml(piece, frets, tie_stop, tie_start, 2, info))
         xml.append("</measure>")
         parts.append("".join(xml))
     doc = ('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" '
@@ -639,15 +803,111 @@ def tab_svg(events: list[dict], chord_marks: dict, per_bar: int, bars_per_line: 
     ypos = lambda u: (u // (bars_per_line * bar_units)) * height_line + 30
     for at, name in sorted(chord_marks.items()):
         out.append(f'<text x="{xpos(at)}" y="{ypos(at) - 6}" class="tc">{name}</text>')
-    for e in events:
+    ordered = sorted(events, key=lambda e: e["at"])
+    for k, e in enumerate(ordered):
+        tech = e.get("tech") or {}
         for string, fret in e["frets"]:
             x, y = xpos(e["at"]), ypos(e["at"]) + (5 - string) * gap
-            out.append(f'<rect x="{x - 7}" y="{y - 7}" width="14" height="14" class="fb"/><text x="{x}" y="{y + 4.5}" class="fn">{fret}</text>')
+            text = str(fret)
+            if len(e["frets"]) == 1 and tech.get("bend"):
+                text += f"b{fret + tech['bend']}" + ("r" if tech.get("release") else "")   # 7b9 = 7 品推到 9 品的音高
+            if len(e["frets"]) == 1 and tech.get("vibrato"):
+                text += "~"
+            width = 8 * len(text) + 4
+            out.append(f'<rect x="{x - width / 2}" y="{y - 7}" width="{width}" height="14" class="fb"/>'
+                       f'<text x="{x}" y="{y + 4.5}" class="fn">{text}</text>')
+        nxt = ordered[k + 1] if k + 1 < len(ordered) else None
+        how = tech.get("to_next")
+        if how and nxt and len(e["frets"]) == 1 and len(nxt["frets"]) == 1 and ypos(e["at"]) == ypos(nxt["at"]):
+            (s1, f1), (_, f2) = e["frets"][0], nxt["frets"][0]
+            x1, x2, y = xpos(e["at"]), xpos(nxt["at"]), ypos(e["at"]) + (5 - s1) * gap
+            if how == "slide":       # 斜线：往高品滑 /，往低品滑 \
+                up = f2 > f1
+                if x2 - x1 >= 30:
+                    out.append(f'<line x1="{x1 + 11}" y1="{y + (4 if up else -4)}" x2="{x2 - 11}" y2="{y + (-4 if up else 4)}" class="sl"/>')
+                else:                # 太挤：在两个数字中间上方写 / 或 反斜线
+                    out.append(f'<text x="{(x1 + x2) / 2}" y="{y - 9}" class="hp">{"/" if up else chr(92)}</text>')
+            else:                    # 击弦 h / 勾弦 p：弧线 + 字母
+                mid = (x1 + x2) / 2
+                out.append(f'<path d="M{x1 + 4} {y - 9} Q{mid} {y - 19} {x2 - 4} {y - 9}" class="arc"/>'
+                           f'<text x="{mid}" y="{y - 15}" class="hp">{"h" if how == "hammer" else "p"}</text>')
     out.append("</svg>")
     return "".join(out)
 
 
-def write_chord_html(path: str, title: str, info: dict | None, tempo: float, tab: str = "") -> None:
+def fretboard_svgs(events: list[dict], chord_marks: dict, per_bar: int) -> str:
+    """静态指板图：每小节一张，圆圈里的数字是弹的先后顺序，细线连起下一个音；
+    滑音是粗线、h/p 是击弦/勾弦、↑ 是推弦、~ 是揉弦。和程序里的动态指板是同一种画法。"""
+    bar_units = per_bar * UNITS
+    by_bar = {}
+    for e in sorted(events, key=lambda x: x["at"]):
+        by_bar.setdefault(e["at"] // bar_units, []).append(e)
+    chords_by_bar = {}
+    for at, name in sorted(chord_marks.items()):
+        chords_by_bar.setdefault(at // bar_units, []).append(name)
+    current_chord = None
+    cards = []
+    ordered = sorted(events, key=lambda x: x["at"])
+    nxt_of = {id(e): ordered[i + 1] for i, e in enumerate(ordered[:-1])}
+    for bar in range(0, max(by_bar) + 1 if by_bar else 0):
+        if bar in chords_by_bar:
+            current_chord = chords_by_bar[bar][-1]
+        items = by_bar.get(bar)
+        if not items:
+            continue
+        frets = [f for e in items for _, f in e["frets"]] + [f + (e.get("tech") or {}).get("bend", 0) for e in items for _, f in e["frets"]]
+        fretted = [f for f in frets if f > 0] or [1]
+        lo = max(0, min(fretted) - 1)
+        hi = max(lo + 5, max(fretted) + 1)
+        w, h, left, top, gap = 430, 150, 30, 34, 16
+        span = hi - lo + 1
+        fw = (w - left - 10) / span
+        fx = lambda f: left + (f - lo + 0.5) * fw if f > 0 else left - 12
+        sy = lambda st: top + (5 - st) * gap
+        svg = [f'<svg viewBox="0 0 {w} {h}" class="fbd">']
+        names = " → ".join(dict.fromkeys(chords_by_bar.get(bar, []))) or (current_chord or "")
+        svg.append(f'<text x="4" y="14" class="fbt">第 {bar + 1} 小节</text><text x="{w - 6}" y="14" class="fbc">{names}</text>')
+        for f in range(lo, hi + 1):
+            x = left + (f - lo) * fw
+            svg.append(f'<line x1="{x}" y1="{top}" x2="{x}" y2="{top + 5 * gap}" class="{"nut2" if f == 0 else "fw"}"/>')
+            if f + 1 <= hi and (f + 1) in (1, 3, 5, 7, 9, 12, 15, 17, 19, 21):
+                svg.append(f'<text x="{x + fw / 2}" y="{top + 5 * gap + 16}" class="fnum">{f + 1}</text>')
+        for st in range(6):
+            svg.append(f'<line x1="{left}" y1="{sy(st)}" x2="{w - 10}" y2="{sy(st)}" class="sw"/>')
+            svg.append(f'<text x="8" y="{sy(st) + 4}" class="snum">{6 - st}</text>')
+        # 先画连线，再画圆点
+        spots = {}
+        for n, e in enumerate(items, 1):
+            for st, f in e["frets"]:
+                spots.setdefault((st, f), []).append(n)
+            nxt = nxt_of.get(id(e))
+            if nxt is not None and nxt["at"] // bar_units == bar and len(e["frets"]) == 1 and len(nxt["frets"]) == 1:
+                (s1, f1), (s2, f2) = e["frets"][0], nxt["frets"][0]
+                how = (e.get("tech") or {}).get("to_next")
+                cls = "lnk-s" if how == "slide" else "lnk"
+                svg.append(f'<line x1="{fx(f1)}" y1="{sy(s1)}" x2="{fx(f2)}" y2="{sy(s2)}" class="{cls}"/>')
+                if how in ("hammer", "pull"):
+                    svg.append(f'<text x="{(fx(f1) + fx(f2)) / 2}" y="{sy(s1) - 9}" class="hp">{"h" if how == "hammer" else "p"}</text>')
+        for (st, f), order in spots.items():
+            x, y = fx(f), sy(st)
+            svg.append(f'<circle cx="{x}" cy="{y}" r="8" class="{"odot" if f == 0 else "fdot"}"/>'
+                       f'<text x="{x}" y="{y + 3.5}" class="ord">{order[0] if len(order) == 1 else ""}</text>')
+            if len(order) > 1:
+                svg.append(f'<text x="{x}" y="{y + 3.5}" class="ord2">{order[0]}</text>'
+                           f'<text x="{x + 10}" y="{y - 8}" class="more">{",".join(map(str, order[1:4]))}{"…" if len(order) > 4 else ""}</text>')
+        for e in items:
+            tech = e.get("tech") or {}
+            if len(e["frets"]) == 1 and (tech.get("bend") or tech.get("vibrato")):
+                st, f = e["frets"][0]
+                label = (f"↑{tech['bend']}" + ("↓" if tech.get("release") else "")) if tech.get("bend") else ""
+                label += "~" if tech.get("vibrato") else ""
+                svg.append(f'<text x="{fx(f) + 10}" y="{sy(st) + 13}" class="bend">{label}</text>')
+        svg.append("</svg>")
+        cards.append("".join(svg))
+    return "".join(f'<div class="fbcard">{c}</div>' for c in cards)
+
+
+def write_chord_html(path: str, title: str, info: dict | None, tempo: float, tab: str = "", boards: str = "") -> None:
     if not info:
         info = {"capo": 0, "capo_shapes": {}, "segments": [], "bars": [], "counts": {}, "key": "", "tuning_cents": 0}
     capo = info["capo"]
@@ -677,14 +937,23 @@ h1{{font-size:22px;margin:0 0 6px}} .meta{{color:#5b6678;margin-bottom:16px;line
 .bar:nth-child(4n+1){{border-left:1px solid #d5dce7}} .t{{display:block;font-size:10px;color:#8a94a6;font-weight:normal}}
 h2{{font-size:17px;margin:22px 0 8px}} .tab{{width:100%}} .tl{{stroke:#9aa4b5;stroke-width:1}} .bl{{stroke:#1f2a3d;stroke-width:1.4}}
 .bt{{stroke:#b8c0cc}} .bn{{font:10px sans-serif;fill:#8a94a6}} .tabl{{font:bold 12px sans-serif;fill:#1f2a3d}}
-.tc{{font:bold 13px sans-serif;fill:#d9480f;text-anchor:middle}} .fb{{fill:#ffffff}} .fn{{font:bold 13px sans-serif;text-anchor:middle;fill:#1f2a3d}}
+.tc{{font:bold 13px sans-serif;fill:#d9480f;text-anchor:middle}} .sl{{stroke:#1f2a3d;stroke-width:1.6}}
+.arc{{fill:none;stroke:#5b6678;stroke-width:1}}
+.fbgrid{{display:grid;grid-template-columns:1fr 1fr;gap:10px}} .fbcard{{border:1px solid #e3e8ef;border-radius:6px;padding:4px;break-inside:avoid;background:#fbf8f2}}
+.fbd{{width:100%}} .fbt{{font:bold 12px sans-serif;fill:#1f2a3d}} .fbc{{font:bold 12px sans-serif;fill:#d9480f;text-anchor:end}}
+.fw{{stroke:#b8a58c;stroke-width:1}} .nut2{{stroke:#3b2f25;stroke-width:4}} .sw{{stroke:#6b5b4b;stroke-width:1}}
+.fnum{{font:10px sans-serif;fill:#8a7a66;text-anchor:middle}} .snum{{font:9px sans-serif;fill:#8a7a66}}
+.lnk{{stroke:#9aa4b5;stroke-width:1.2;stroke-dasharray:3 2}} .lnk-s{{stroke:#d9480f;stroke-width:3}}
+.fdot{{fill:#d9480f}} .odot{{fill:#fbf8f2;stroke:#d9480f;stroke-width:2}} .ord{{font:bold 10px sans-serif;fill:#fff;text-anchor:middle}} .odot + .ord{{fill:#d9480f}}
+.ord2{{font:bold 10px sans-serif;fill:#fff;text-anchor:middle}} .more{{font:9px sans-serif;fill:#5b6678}} .bend{{font:bold 10px sans-serif;fill:#1f6feb}} .hp{{font:italic 10px sans-serif;fill:#5b6678;text-anchor:middle}} .fb{{fill:#ffffff}} .fn{{font:bold 13px sans-serif;text-anchor:middle;fill:#1f2a3d}}
 @media print{{body{{margin:0}}}}
 </style></head><body>
 <h1>{title}</h1>
 <div class="meta">{"调性：" + info["key"] + " · " if info["key"] else ""}速度约 {tempo:.0f} BPM · {capo_text}<br>{tuning_text}<br>
 AI 自动识别，初稿请对照原曲校对；每格一小节。</div>
 {"<h2>和弦</h2><div class=cells>" + diagrams + "</div><div class=grid>" + "".join(rows) + "</div>" if rows else ""}
-{"<h2>Solo 六线谱</h2><div class=meta>最上面一根线是 1 弦（最细的），数字是按第几品；0 = 空弦。每行 4 小节，下面的小竖线是拍子。和弦名是实际和弦（不按变调夹换算）。</div>" + tab if tab else ""}
+{"<h2>Solo 六线谱</h2><div class=meta>最上面一根线是 1 弦（最细的），数字是按第几品；0 = 空弦。斜线 = 滑音，h = 击弦，p = 勾弦，7b9 = 在 7 品把音推高到 9 品的音（r = 再放回来），~ = 揉弦。和弦名是实际和弦（不按变调夹换算）。</div>" + tab if tab else ""}
+{"<h2>指板图（每小节一张）</h2><div class=meta>和程序里的动态指板一样：最上面是 1 弦；圆圈里的数字是这一小节里弹的先后顺序（同一个位置弹几次，旁边的小数字是后面几次）；细线连到下一个音，粗线 = 滑音，h / p = 击弦 / 勾弦，↑1 / ↑2 = 推弦半音 / 全音（↓ = 放回），~ = 揉弦；空心圈是空弦。</div><div class=fbgrid>" + boards + "</div>" if boards else ""}
 </body></html>"""
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(html)
@@ -721,7 +990,12 @@ def run(path: str, out: str, models_dir: str, do_chords: bool, do_solo: bool, mo
     del tracks
     if do_solo:
         notes = transcribe_notes(result["files"]["guitar"], size, beam, parallel, gpu, mono)
-        emit("progress", stage="排六线谱把位", fraction=0.88)
+        emit("progress", stage="识别滑音、推弦、击勾弦", fraction=0.86)
+        try:
+            notes = detect_techniques(result["files"]["guitar"], notes) if mono else notes
+        except Exception as error:
+            emit("notice", message=f"演奏技巧识别失败（{type(error).__name__}），只标音符。")
+        emit("progress", stage="排六线谱把位", fraction=0.9)
         grids = choose_grids(notes, beats_full, bar_start)
         groups, events = [], []
         for n in notes:
@@ -738,16 +1012,22 @@ def run(path: str, out: str, models_dir: str, do_chords: bool, do_solo: bool, mo
             if i + 1 < len(groups):
                 g["stop"] = min(g["stop"], groups[i + 1]["at"])
             g["pitches"] = sorted(set(g["pitches"]))[-6:]
-        tabs = assign_tab([g["pitches"] for g in groups])
+        def group_tech(g):
+            return (g["notes"][0].get("tech") or {}) if len(g["notes"]) == 1 else {}
+        links = {i for i, g in enumerate(groups[:-1]) if group_tech(g).get("to_next")}
+        slides = {i for i, g in enumerate(groups[:-1]) if group_tech(g).get("to_next") == "slide"}
+        tabs = assign_tab([g["pitches"] for g in groups], links, [min(n["start"] for n in g["notes"]) for g in groups], slides)
         tab_notes = []
-        for g, frets in zip(groups, tabs):
+        for i, (g, frets) in enumerate(zip(groups, tabs)):
+            tech = finalize_tech(group_tech(g), frets, tabs[i + 1] if i + 1 < len(tabs) else None,
+                                 (groups[i + 1]["at"] - g["stop"]) if i + 1 < len(groups) else 99)
             if g["stop"] > g["at"]:
-                events.append({"at": g["at"], "len": g["stop"] - g["at"], "frets": frets})
+                events.append({"at": g["at"], "len": g["stop"] - g["at"], "frets": frets, "tech": tech})
             start = min(n["start"] for n in g["notes"])
             end = max(n["end"] for n in g["notes"])
             for string, fret in frets:
                 tab_notes.append({"start": round(start, 3), "end": round(end, 3), "string": string, "fret": fret,
-                                  "pitch": ch.STANDARD_TUNING[string] + fret})
+                                  "pitch": ch.STANDARD_TUNING[string] + fret, "tech": tech})
         result["notes"] = tab_notes
         marks = {}
         if chord_info:
@@ -766,10 +1046,11 @@ def run(path: str, out: str, models_dir: str, do_chords: bool, do_solo: bool, mo
             per_bar_counts[e["at"] // (per_bar * UNITS)] = per_bar_counts.get(e["at"] // (per_bar * UNITS), 0) + 1
         dense = max(per_bar_counts.values() or [0])
         result["_tab"] = tab_svg(events, marks, per_bar, 4 if dense <= 8 else 3 if dense <= 12 else 2)
+        result["_boards"] = fretboard_svgs(events, marks, per_bar)
         if not notes:
             emit("notice", message="吉他轨里没有识别到音符（这首歌可能没有明显的吉他）。")
     html = os.path.join(out, "sheet.html")
-    write_chord_html(html, title, chord_info, tempo, result.pop("_tab", ""))
+    write_chord_html(html, title, chord_info, tempo, result.pop("_tab", ""), result.pop("_boards", ""))
     result["files"]["sheet_html"] = html
     with open(os.path.join(out, "result.json"), "w", encoding="utf-8") as handle:
         json.dump(result, handle, ensure_ascii=False)

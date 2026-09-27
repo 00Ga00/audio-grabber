@@ -298,6 +298,7 @@ AI 组件|AI components|KI-Komponenten
 第一次录音时自动准备|Prepared automatically on first recording|Wird bei der ersten Aufnahme eingerichtet
 录音组件|Recorder|Rekorder
 ● 有新版本|● Update available|● Update verfügbar
+打开吉他谱（含指板图）|Open guitar sheet (with fretboards)|Gitarrenblatt öffnen (mit Griffbrettern)
 ● 边放边录（电脑声音）|● Record while playing (PC audio)|● Beim Abspielen aufnehmen (PC-Ton)
 ■ 停止并扒谱|■ Stop & transcribe|■ Stopp & transkribieren
 正在停止……|Stopping…|Wird gestoppt…
@@ -416,6 +417,15 @@ AI 处理完成|AI finished|KI fertig
 识别到调性：|Key detected: |Erkannte Tonart: 
 （活动）| (activity)| (Aktivität)
 版本 |Version |Version
+识别滑音、推弦、击勾弦|Detecting slides, bends, hammer-ons/pull-offs|Slides, Bendings, Hammer-ons/Pull-offs erkennen
+击弦 h|hammer-on h|Hammer-on h
+勾弦 p|pull-off p|Pull-off p
+推弦 ↑|bend ↑|Bending ↑
+ 再放回| & release| & zurück
+揉弦 ~|vibrato ~|Vibrato ~
+滑|slide|Slide
+演奏技巧识别失败（|Technique detection failed (|Technik-Erkennung fehlgeschlagen (
+），只标音符。|) – notes only.|) – nur Töne.
 ● 正在边放边录 · 已录 |● Recording while playing · |● Aufnahme läuft · 
  · 停止后自动完整扒谱（和弦 + Solo 六线谱）| recorded · full transcription (chords + solo tab) after you stop| aufgenommen · vollständige Transkription (Akkorde + Solo-Tab) nach dem Stoppen
 刚才的和弦：|Recent chords:|Letzte Akkorde:

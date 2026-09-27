@@ -221,6 +221,14 @@ def main() -> None:
             else:
                 subprocess.Popen(["xdg-open", os.path.dirname(path)])
 
+    def open_file(path):
+        """用默认程序打开文件（吉他谱 PDF / HTML）。"""
+        if path and os.path.exists(path):
+            if os.name == "nt":
+                os.startfile(path)
+            else:
+                subprocess.Popen(["xdg-open", path])
+
     # ------------------------------------------------------------- 视频提取
     download_tab = ttk.Frame(notebook, padding=8)
     notebook.add(download_tab, text="视频提取")
@@ -1876,6 +1884,9 @@ def main() -> None:
     g2_open_button = ttk.Button(g2_actions, text="打开文件夹", state="disabled",
                                 command=lambda: open_path((g2_state["result"] or {}).get("exported", [""])[0]))
     g2_open_button.grid(row=0, column=2, padx=(8, 0))
+    g2_sheet_button = ttk.Button(g2_actions, text="打开吉他谱（含指板图）", state="disabled",
+                                 command=lambda: open_file((g2_state["result"] or {}).get("sheet")))
+    g2_sheet_button.grid(row=0, column=4, padx=(8, 0))
     g2_live_button = ttk.Button(g2_actions, text="● 边放边录（电脑声音）")
     g2_live_button.grid(row=0, column=3, padx=(8, 0))
     g2_live = {"on": False, "chord": "N", "history": [], "capo": 0, "seconds": 0.0, "wav": None, "stop": None, "folder": None}
@@ -2063,7 +2074,27 @@ def main() -> None:
             for n in upcoming:
                 dot(n["string"], n["fret"], "", "#4c8dff")
             for n in now:
+                tech = n.get("tech") or {}
+                how = tech.get("to_next")
+                if how and upcoming:
+                    nx = upcoming[0]
+                    if how == "slide":        # 滑音：粗线滑到下一个位置
+                        c.create_line(fx(n["fret"]), sy(n["string"]), fx(nx["fret"]), sy(nx["string"]), fill="#d9480f", width=4,
+                                      arrow="last", arrowshape=(10, 12, 5))
+                    else:                     # 击弦 / 勾弦
+                        c.create_line(fx(n["fret"]), sy(n["string"]), fx(nx["fret"]), sy(nx["string"]), fill="#5b6678", dash=(3, 2))
+                    label = {"slide": "滑", "hammer": "击弦 h", "pull": "勾弦 p"}[how]
+                    c.create_text((fx(n["fret"]) + fx(nx["fret"])) / 2, sy(n["string"]) - 14, text=label,
+                                  font=("Microsoft YaHei UI", 8, "bold"), fill="#d9480f" if how == "slide" else "#5b6678")
                 dot(n["string"], n["fret"], "#d9480f", "#d9480f")
+                extra = ""
+                if tech.get("bend"):
+                    extra = f"推弦 ↑{tech['bend']}" + (" 再放回" if tech.get("release") else "")
+                if tech.get("vibrato"):
+                    extra += (" " if extra else "") + "揉弦 ~"
+                if extra:
+                    c.create_text(fx(n["fret"]) + 14, sy(n["string"]) + 12, anchor="w", text=extra,
+                                  font=("Microsoft YaHei UI", 8, "bold"), fill="#1f6feb")
         else:
             name = g2_chord_at(t)
             info = result.get("chords")
@@ -2292,6 +2323,9 @@ def main() -> None:
             g2_progress.configure(value=100)
             g2_state["result"] = value
             g2_open_button.configure(state="normal" if value.get("exported") else "disabled")
+            value["sheet"] = next((p_ for p_ in value.get("exported", []) if p_.endswith(".pdf") and "吉他谱" in p_),
+                                  next((p_ for p_ in value.get("exported", []) if p_.endswith(".html")), None))
+            g2_sheet_button.configure(state="normal" if value["sheet"] else "disabled")
             g2_play_button.configure(state="normal")
             g2_restart_button.configure(state="normal")
             parts = []

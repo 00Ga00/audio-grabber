@@ -476,13 +476,13 @@ def _write_perf(script, args: list[str], perf: dict, ok: bool) -> None:
     """每次 AI 运行各阶段用了多少秒，记到本机日志里（只在本机，用来找慢在哪里）。"""
     try:
         keep = {}
-        for flag in ("--steps", "--size", "--beam", "--parallel", "--overlap", "--no-fast", "--low-vram", "--transcribe", "--stems", "--download"):
+        for flag in ("--steps", "--size", "--beam", "--parallel", "--overlap", "--no-fast", "--low-vram", "--transcribe", "--stems", "--download", "--guitar", "--live"):
             if flag in args:
                 i = args.index(flag)
                 value = args[i + 1] if i + 1 < len(args) and not args[i + 1].startswith("--") else True
                 keep[flag.lstrip("-")] = os.path.basename(value) if isinstance(value, str) and os.sep in value else value
         seconds = None
-        for flag in ("--input", "--transcribe", "--stems"):
+        for flag in ("--input", "--transcribe", "--stems", "--guitar"):
             if flag in args:
                 frames = wav_frames(args[args.index(flag) + 1])   # 输入都是 44.1 kHz 的 WAV
                 seconds = round(frames / WORK_RATE, 1) if frames else None

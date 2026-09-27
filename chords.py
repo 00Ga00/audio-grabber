@@ -53,8 +53,12 @@ def split_name(chord: str) -> tuple[int, str, int | None]:
     return root, (quality if quality in QUALITIES else ""), (pitch_class(bass) if bass else None)
 
 
-def make_name(root: int, quality: str, bass: int | None = None, flats: bool = False) -> str:
-    names = NOTE_NAMES if not flats else ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+SHARP_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+FLAT_NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+
+
+def make_name(root: int, quality: str, bass: int | None = None, flats: bool = False, sharps: bool = False) -> str:
+    names = FLAT_NAMES if flats else SHARP_NAMES if sharps else NOTE_NAMES
     text = names[root % 12] + quality
     if bass is not None and bass % 12 != root % 12:
         text += "/" + names[bass % 12]
@@ -130,5 +134,5 @@ def suggest_capo(chords: dict[str, float], max_capo: int = 7) -> dict:
     return best
 
 
-def key_name(tonic: int, minor: bool) -> str:
-    return make_name(tonic, "m" if minor else "") + (" 小调" if minor else " 大调")
+def key_name(tonic: int, minor: bool, sharps: bool = False, flats: bool = False) -> str:
+    return make_name(tonic, "m" if minor else "", sharps=sharps, flats=flats) + (" 小调" if minor else " 大调")
